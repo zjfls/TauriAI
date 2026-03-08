@@ -26,7 +26,7 @@ import { useTerminalTabStore } from './stores/terminalTabStore';
 import { useUIStore } from './stores/uiStore';
 import { filterNonPracticeAgents } from '../../common/src/agentUtils';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
-import { chatTabId, docTabId, parseWorkspaceTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
+import { chatTabId, docTabId, parseWorkspaceTabId, practiceTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './stores/workspaceTabStore';
 import { PRACTICE_TAB_TITLE, openPracticeWindow, openPracticeWorkspaceTab } from './utils/practiceWorkspaceTab';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
@@ -49,6 +49,7 @@ import {
   syncWindowLayoutFromBackend,
   upsertWindowRecord,
 } from './utils/windowLayout';
+import { clearPersistedMainWindowState, RESET_MAIN_WINDOW_EVENT } from './utils/resetMainWindow';
 import './App.css';
 
 function App() {
@@ -555,6 +556,114 @@ function App() {
       unlistenAppClosing?.();
     };
   }, [isStandalone, isDragGhostWindow]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (currentWindowLabel !== 'main') return;
+
+    let disposed = false;
+    let unlistenResetMainWindow: null | (() => void) = null;
+    const currentWindow = getCurrentWebviewWindow();
+
+    const resetMainWindow = async () => {
+      clearPersistedMainWindowState();
+
+      const sessionStore = useSessionStore.getState();
+      const documentStore = useDocumentStore.getState();
+      const webTabStore = useWebTabStore.getState();
+      const terminalTabStore = useTerminalTabStore.getState();
+      const workspaceTabStore = useWorkspaceTabStore.getState();
+      const layoutStore = useWindowLayoutStore.getState();
+
+      const workspaceTabOrder = workspaceTabStore.tabOrder;
+      const validTabIds = new Set<WorkspaceTabId>();
+      for (const sid of sessionStore.sessions.keys()) validTabIds.add(chatTabId(sid));
+      for (const document of documentStore.documents) validTabIds.add(docTabId(document.id));
+      for (const tab of webTabStore.tabs) validTabIds.add(webTabId(tab.id));
+      for (const tab of terminalTabStore.tabs) validTabIds.add(terminalTabId(tab.id));
+
+      const practiceId = practiceTabId();
+      if (workspaceTabOrder.includes(practiceId)) validTabIds.add(practiceId);
+
+      const orderedValidTabIds: WorkspaceTabId[] = [];
+      const seen = new Set<WorkspaceTabId>();
+      const push = (tabId: WorkspaceTabId) => {
+        if (!validTabIds.has(tabId) || seen.has(tabId)) return;
+        seen.add(tabId);
+        orderedValidTabIds.push(tabId);
+      };
+
+      for (const tabId of workspaceTabOrder) push(tabId);
+      for (const sid of sessionStore.sessions.keys()) push(chatTabId(sid));
+      for (const document of documentStore.documents) push(docTabId(document.id));
+      for (const tab of webTabStore.tabs) push(webTabId(tab.id));
+      for (const tab of terminalTabStore.tabs) push(terminalTabId(tab.id));
+
+      const activeChatTabId = sessionStore.activeSessionId ? chatTabId(sessionStore.activeSessionId) : null;
+      const activeTabId = activeChatTabId && orderedValidTabIds.includes(activeChatTabId)
+        ? activeChatTabId
+        : orderedValidTabIds[0] ?? null;
+      const paneId = crypto.randomUUID();
+
+      workspaceTabStore.setTabOrder(orderedValidTabIds);
+      layoutStore.replaceLayout({
+        panes: [
+          {
+            id: paneId,
+            tabIds: orderedValidTabIds,
+            activeTabId,
+            weight: 1,
+          },
+        ],
+        focusedPaneId: paneId,
+      });
+      useUIStore.getState().setActiveView('chat');
+
+      try {
+        await (currentWindow as any).unminimize?.();
+      } catch {
+        // ignore
+      }
+      try {
+        await (currentWindow as any).show?.();
+      } catch {
+        // ignore
+      }
+      try {
+        await currentWindow.setSize(new PhysicalSize(1300, 910));
+      } catch {
+        // ignore
+      }
+      try {
+        await currentWindow.center();
+      } catch {
+        // ignore
+      }
+      try {
+        await currentWindow.setFocus();
+      } catch {
+        // ignore
+      }
+    };
+
+    void currentWindow.listen(RESET_MAIN_WINDOW_EVENT, () => {
+      if (disposed) return;
+      void resetMainWindow();
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenResetMainWindow = fn;
+      })
+      .catch(() => {});
+
+    return () => {
+      disposed = true;
+      unlistenResetMainWindow?.();
+    };
+  }, [currentWindowLabel]);
 
   useEffect(() => {
     if (!isTauri()) return;

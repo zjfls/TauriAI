@@ -52,15 +52,15 @@ import type {
   RunEventPayload,
   TerminalScope,
   ThinkingLevel,
-	  WorkstudioChatWithFileSummary,
-	  WorkstudioChatWithThread,
-	  Workstudio,
-	  WorkstudioFolderAnalysis,
-	  WorkstudioFolderAnalysisSummary,
-	  WorkstudioSymbolAnalysis,
-	  WorkstudioSymbolAnalysisSummary,
-	  WorkstudioUiState,
-	} from '../../types';
+  WorkstudioChatWithFileSummary,
+  WorkstudioChatWithThread,
+  Workstudio,
+  WorkstudioFolderAnalysis,
+  WorkstudioFolderAnalysisSummary,
+  WorkstudioSymbolAnalysis,
+  WorkstudioSymbolAnalysisSummary,
+  WorkstudioUiState,
+} from '../../types';
 import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } from '../../shortcuts';
 import {
   astDocumentSymbols,
@@ -68,20 +68,20 @@ import {
   codeIndexSearchWorkspaceSymbols,
   codeIndexSummary,
   codeIndexStartWorkspaceScan,
-	  deleteWorkstudioFolderAnalysis,
-	  deleteWorkstudioSymbolAnalysis,
-	  getMessages,
-		  getWorkstudioFolderAnalysis,
-		  getWorkstudioSymbolAnalysis,
-		  listWorkstudioFolderAnalysisSummaries,
-		  listWorkstudioChatWithFileSummaries,
-		  listWorkstudioSymbolAnalysisKeysForFile,
-		  listWorkstudioSymbolAnalysisSummariesForFile,
-		  saveWorkstudioFolderAnalysis,
-		  saveWorkstudioSymbolAnalysis,
-		  lspDetectServer,
-		  lspEnsureServer,
-		  lspNotify,
+  deleteWorkstudioFolderAnalysis,
+  deleteWorkstudioSymbolAnalysis,
+  getMessages,
+  getWorkstudioFolderAnalysis,
+  getWorkstudioSymbolAnalysis,
+  listWorkstudioFolderAnalysisSummaries,
+  listWorkstudioChatWithFileSummaries,
+  listWorkstudioSymbolAnalysisKeysForFile,
+  listWorkstudioSymbolAnalysisSummariesForFile,
+  saveWorkstudioFolderAnalysis,
+  saveWorkstudioSymbolAnalysis,
+  lspDetectServer,
+  lspEnsureServer,
+  lspNotify,
   lspRequest,
   lspShutdownLanguage,
   lspStatus,
@@ -107,6 +107,7 @@ import { showGlobalError } from '../../utils/errorUtils';
 import { TerminalSurface, type TerminalSurfaceHandle } from '../Terminal/TerminalSurface';
 import { DeferredMarkdown } from '../Chat/DeferredMarkdown';
 import { SymbolSearchDialog } from './SymbolSearchDialog';
+import { SymbolKindIcon } from './SymbolKindIcon';
 import {
   type SymbolSearchContext,
   type SymbolSearchItem,
@@ -426,51 +427,51 @@ const PaneDropZone: React.FC<{ paneId: string; children: React.ReactNode }> = ({
   );
 };
 
-		const SortableTab: React.FC<{
-		  id: string;
-		  active: boolean;
-		  title: string;
-		  tooltip?: string;
-		  pinnedWhileDragging?: boolean;
-		  onClick: () => void;
-		  onClose: () => void;
-		  onContextMenu?: (e: React.MouseEvent) => void;
-		  onMouseEnter?: (e: React.MouseEvent) => void;
-		  onMouseLeave?: (e: React.MouseEvent) => void;
-		}> = ({ id, active, title, tooltip, pinnedWhileDragging, onClick, onClose, onContextMenu, onMouseEnter, onMouseLeave }) => {
-		  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
-		  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
-		  const style: React.CSSProperties = {
-		    transform: CSS.Transform.toString(effectiveTransform),
-	    transition,
-	    opacity: isDragging ? 0.6 : 1,
-	  };
+const SortableTab: React.FC<{
+  id: string;
+  active: boolean;
+  title: string;
+  tooltip?: string;
+  pinnedWhileDragging?: boolean;
+  onClick: () => void;
+  onClose: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
+  onMouseEnter?: (e: React.MouseEvent) => void;
+  onMouseLeave?: (e: React.MouseEvent) => void;
+}> = ({ id, active, title, tooltip, pinnedWhileDragging, onClick, onClose, onContextMenu, onMouseEnter, onMouseLeave }) => {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const effectiveTransform = pinnedWhileDragging && isDragging ? null : transform;
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(effectiveTransform),
+    transition,
+    opacity: isDragging ? 0.6 : 1,
+  };
 
   return (
     <button
       ref={setNodeRef}
       style={style}
-	      type="button"
-	      onClick={onClick}
-	      onContextMenu={onContextMenu}
-	      onMouseEnter={onMouseEnter}
-	      onMouseLeave={onMouseLeave}
-	      data-workstudio-tab-id={id}
-		      className={[
-		        'group flex h-7 items-center gap-0.5 rounded-sm px-1.5 py-0 text-[15px] leading-5',
-		        active
-		          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
-		          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
-		      ].join(' ')}
-		      title={tooltip || title}
-		      {...attributes}
-		      {...listeners}
-		    >
-		      <span className="max-w-[132px] truncate" title={tooltip || title}>{title}</span>
-	      <span
-	        className="rounded p-px text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-	        onClick={(event) => {
-	          event.stopPropagation();
+      type="button"
+      onClick={onClick}
+      onContextMenu={onContextMenu}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+      data-workstudio-tab-id={id}
+      className={[
+        'group flex h-7 items-center gap-0.5 rounded-sm px-1.5 py-0 text-[15px] leading-5',
+        active
+          ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200'
+          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800',
+      ].join(' ')}
+      title={tooltip || title}
+      {...attributes}
+      {...listeners}
+    >
+      <span className="max-w-[132px] truncate" title={tooltip || title}>{title}</span>
+      <span
+        className="rounded p-px text-gray-400 hover:bg-gray-200 hover:text-gray-700 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+        onClick={(event) => {
+          event.stopPropagation();
           onClose();
         }}
         role="button"
@@ -1652,17 +1653,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const cancelledFolderAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
   const scheduleSymbolAnalysisRunsRef = useRef<(() => void) | null>(null);
   const scheduleFolderAnalysisRunsRef = useRef<(() => void) | null>(null);
-	  const symbolAnalysisRoundRobinCursorRef = useRef<number>(0);
-	  const folderAnalysisRoundRobinCursorRef = useRef<number>(0);
-	  const startingSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
-	  const startingFolderAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
-	  const trackedRunConversationsRef = useRef<Set<string>>(new Set());
-	  const symbolAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
-	  const symbolAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
-	  const symbolAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
-	  const folderAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
-	  const folderAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
-	  const folderAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
+  const symbolAnalysisRoundRobinCursorRef = useRef<number>(0);
+  const folderAnalysisRoundRobinCursorRef = useRef<number>(0);
+  const startingSymbolAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+  const startingFolderAnalysisBubbleIdsRef = useRef<Set<string>>(new Set());
+  const trackedRunConversationsRef = useRef<Set<string>>(new Set());
+  const symbolAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
+  const symbolAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
+  const symbolAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
+  const folderAnalysisFirstRunEventWaitersRef = useRef<Map<string, () => void>>(new Map());
+  const folderAnalysisCompletionWaitersRef = useRef<Map<string, () => void>>(new Map());
+  const folderAnalysisLastRunEventAtMsByConversationIdRef = useRef<Map<string, number>>(new Map());
   useEffect(() => {
     chatWithHistoryViewerRef.current = chatWithHistoryViewer;
   }, [chatWithHistoryViewer]);
@@ -1682,9 +1683,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [chatWithModal.open]);
 
-	  useEffect(() => {
-	    aiBubblesRef.current = aiBubbles;
-	  }, [aiBubbles]);
+  useEffect(() => {
+    aiBubblesRef.current = aiBubbles;
+  }, [aiBubbles]);
   const symbolAnalysisQueuedCount = useMemo(
     () => aiBubbles.filter((b) => b.kind === 'symbol_analysis' && b.status === 'queued').length,
     [aiBubbles]
@@ -1947,7 +1948,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             workstudioId: normalizedWorkstudioId,
           });
         })
-        .catch(() => {});
+        .catch(() => { });
     },
     []
   );
@@ -2103,7 +2104,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 workstudioId,
               });
             })
-            .catch(() => {});
+            .catch(() => { });
 
           const now = new Date().toISOString();
           thread = await saveChatWithThread({
@@ -2258,7 +2259,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (!bubble.sessionId) return;
       const session = useSessionStore.getState().getSession(bubble.sessionId) ?? null;
       if (!session?.detached) return;
-      await closeSession(bubble.sessionId).catch(() => {});
+      await closeSession(bubble.sessionId).catch(() => { });
     },
     [chatWithModal.bubbleId, closeChatWithModal, closeSession]
   );
@@ -2274,12 +2275,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         : null;
       const streamingPreview = session?.isGenerating
         ? summarizeChatWithText(
-            extractLatestTurnMarkdownFromBlocks(
-              session.streamingBlocks ?? null,
-              session.streamingTurns ? Array.from(session.streamingTurns.values()) : null
-            ),
-            '生成中…'
-          )
+          extractLatestTurnMarkdownFromBlocks(
+            session.streamingBlocks ?? null,
+            session.streamingTurns ? Array.from(session.streamingTurns.values()) : null
+          ),
+          '生成中…'
+        )
         : null;
       const preview =
         streamingPreview ??
@@ -2419,17 +2420,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const hideTabPathTooltip = useCallback(() => setTabPathTooltip(null), []);
   const [outlineMenu, setOutlineMenu] = useState<
     | {
-        visible: true;
-        anchorX: number;
-        anchorY: number;
-        x: number;
-        y: number;
-        filePath: string;
-        languageId: string;
-        item: OutlineItem;
-        analysis: WorkstudioSymbolAnalysis | null | undefined;
-        analysisExists: boolean | undefined;
-      }
+      visible: true;
+      anchorX: number;
+      anchorY: number;
+      x: number;
+      y: number;
+      filePath: string;
+      languageId: string;
+      item: OutlineItem;
+      analysis: WorkstudioSymbolAnalysis | null | undefined;
+      analysisExists: boolean | undefined;
+    }
     | null
   >(null);
   const outlineMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2781,51 +2782,51 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       }
     };
 
-	    const extractSuffixId = (prefix: string, id: string): string => {
-	      const idx = id.lastIndexOf(prefix);
-	      return idx === -1 ? id : id.slice(idx + prefix.length);
-	    };
+    const extractSuffixId = (prefix: string, id: string): string => {
+      const idx = id.lastIndexOf(prefix);
+      return idx === -1 ? id : id.slice(idx + prefix.length);
+    };
 
-	    // Some providers/gateways incorrectly send "delta" as the full content-so-far.
-	    // If we blindly append, the Workstudio AI viewer will show duplicated intermediate snapshots.
-	    const mergeStreamingTextDelta = (prevText: string, nextDelta: string): string => {
-	      if (!nextDelta) return prevText;
-	      if (!prevText) return nextDelta;
+    // Some providers/gateways incorrectly send "delta" as the full content-so-far.
+    // If we blindly append, the Workstudio AI viewer will show duplicated intermediate snapshots.
+    const mergeStreamingTextDelta = (prevText: string, nextDelta: string): string => {
+      if (!nextDelta) return prevText;
+      if (!prevText) return nextDelta;
 
-	      if (nextDelta.startsWith(prevText)) {
-	        return nextDelta;
-	      }
-	      if (prevText.endsWith(nextDelta)) {
-	        return prevText;
-	      }
-	      const maxOverlap = Math.min(prevText.length, nextDelta.length);
-	      for (let k = maxOverlap; k >= 1; k--) {
-	        if (prevText.slice(prevText.length - k) === nextDelta.slice(0, k)) {
-	          return prevText + nextDelta.slice(k);
-	        }
-	      }
-	      return prevText + nextDelta;
-	    };
+      if (nextDelta.startsWith(prevText)) {
+        return nextDelta;
+      }
+      if (prevText.endsWith(nextDelta)) {
+        return prevText;
+      }
+      const maxOverlap = Math.min(prevText.length, nextDelta.length);
+      for (let k = maxOverlap; k >= 1; k--) {
+        if (prevText.slice(prevText.length - k) === nextDelta.slice(0, k)) {
+          return prevText + nextDelta.slice(k);
+        }
+      }
+      return prevText + nextDelta;
+    };
 
-		    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
-		    const isSnapshotBlockType = (blockType: string) => {
-		      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
-		    };
+    // Some block types are emitted as full JSON snapshots; for these we should not concat deltas.
+    const isSnapshotBlockType = (blockType: string) => {
+      return blockType === 'web_search' || blockType === 'tool_call' || blockType === 'approval';
+    };
 
-		    // Some providers may emit "delta" as cumulative snapshots (or occasionally repeat the same chunk).
-		    // This merge strategy handles both incremental deltas and cumulative snapshots safely.
-		    const mergeChunksAdaptive = (chunks: string[]): string => {
-		      let merged = '';
-		      for (const chunk of chunks) {
-		        merged = mergeStreamingTextDelta(merged, chunk);
-		      }
-		      return merged;
-		    };
+    // Some providers may emit "delta" as cumulative snapshots (or occasionally repeat the same chunk).
+    // This merge strategy handles both incremental deltas and cumulative snapshots safely.
+    const mergeChunksAdaptive = (chunks: string[]): string => {
+      let merged = '';
+      for (const chunk of chunks) {
+        merged = mergeStreamingTextDelta(merged, chunk);
+      }
+      return merged;
+    };
 
-	    const upsertBlock = (
-	      blocks: MessageBlock[],
-	      blockId: string,
-	      blockType: string,
+    const upsertBlock = (
+      blocks: MessageBlock[],
+      blockId: string,
+      blockType: string,
       format: string | undefined,
       turnId: string,
       turnIndex: number | undefined,
@@ -2910,44 +2911,44 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         return [...blocks, createBlock()];
       }
 
-	      const current = blocks[idx];
-	      const next: MessageBlock = (() => {
-	        if (current.type === 'thinking' && blockType === 'thinking') {
-	          return {
-	            ...current,
-	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
-	          };
-	        }
-	        if (current.type === 'status' && blockType === 'status') {
-	          return {
-	            ...current,
-	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
-	          };
-	        }
-	        if (current.type === 'text' && blockType === 'text') {
-	          return {
-	            ...current,
-	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
-	            format: current.format || format || 'markdown',
-	          };
-	        }
-	        if (current.type === 'tool_result' && blockType === 'tool_result') {
-	          return {
-	            ...current,
-	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
-	          };
-	        }
-	        if (current.type === 'error' && blockType === 'error') {
-	          return {
-	            ...current,
-	            turnIndex: current.turnIndex ?? turnIndex,
-	            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
-	          };
-	        }
+      const current = blocks[idx];
+      const next: MessageBlock = (() => {
+        if (current.type === 'thinking' && blockType === 'thinking') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+          };
+        }
+        if (current.type === 'status' && blockType === 'status') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+          };
+        }
+        if (current.type === 'text' && blockType === 'text') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+            format: current.format || format || 'markdown',
+          };
+        }
+        if (current.type === 'tool_result' && blockType === 'tool_result') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+          };
+        }
+        if (current.type === 'error' && blockType === 'error') {
+          return {
+            ...current,
+            turnIndex: current.turnIndex ?? turnIndex,
+            text: mergeStreamingTextDelta(String(current.text ?? ''), delta),
+          };
+        }
         if (current.type === 'tool_call' && blockType === 'tool_call') {
           // Snapshot update: overwrite
           return createBlock();
@@ -3006,17 +3007,17 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       const snapshotMap = new Map(snapshot);
       const appliedConversationIds = new Set<string>();
 
-	      setAiBubbles((prev) => {
-	        let updated = false;
-	        const next = prev.map((b) => {
-	          const conversationId =
-	            (b.conversationId ?? '').trim() ||
-	            (b.kind === 'symbol_analysis'
-	              ? String(symbolAnalysisConversationIdByBubbleIdRef.current.get(b.id) ?? '').trim()
-	              : '');
-	          if (!conversationId) return b;
-	          const chunks = snapshotMap.get(conversationId);
-	          if (!chunks || chunks.blocks.size === 0) return b;
+      setAiBubbles((prev) => {
+        let updated = false;
+        const next = prev.map((b) => {
+          const conversationId =
+            (b.conversationId ?? '').trim() ||
+            (b.kind === 'symbol_analysis'
+              ? String(symbolAnalysisConversationIdByBubbleIdRef.current.get(b.id) ?? '').trim()
+              : '');
+          if (!conversationId) return b;
+          const chunks = snapshotMap.get(conversationId);
+          if (!chunks || chunks.blocks.size === 0) return b;
 
           // Streaming already ended/aborted: drop buffered tokens to avoid resurrecting UI
           if (b.status === 'done' || b.status === 'error') {
@@ -3025,16 +3026,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           }
 
           let nextBlocks = b.blocks ?? [];
-	          for (const [uiBlockId, entry] of chunks.blocks.entries()) {
-	            const mergedDelta =
-	              entry.chunks.length > 0
-	                ? isSnapshotBlockType(entry.blockType)
-	                  ? entry.chunks[entry.chunks.length - 1]
-	                  : mergeChunksAdaptive(entry.chunks)
-	                : '';
-	            if (!mergedDelta) continue;
-	            nextBlocks = upsertBlock(
-	              nextBlocks,
+          for (const [uiBlockId, entry] of chunks.blocks.entries()) {
+            const mergedDelta =
+              entry.chunks.length > 0
+                ? isSnapshotBlockType(entry.blockType)
+                  ? entry.chunks[entry.chunks.length - 1]
+                  : mergeChunksAdaptive(entry.chunks)
+                : '';
+            if (!mergedDelta) continue;
+            nextBlocks = upsertBlock(
+              nextBlocks,
               uiBlockId,
               entry.blockType,
               entry.format,
@@ -3044,15 +3045,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             );
           }
 
-	          if (nextBlocks !== b.blocks) {
-	            appliedConversationIds.add(conversationId);
-	            updated = true;
-	            return {
-	              ...b,
-	              conversationId,
-	              blocks: nextBlocks,
-	            };
-	          }
+          if (nextBlocks !== b.blocks) {
+            appliedConversationIds.add(conversationId);
+            updated = true;
+            return {
+              ...b,
+              conversationId,
+              blocks: nextBlocks,
+            };
+          }
           appliedConversationIds.add(conversationId);
           return b;
         });
@@ -3110,29 +3111,29 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           const conversationId = (payload.conversationId ?? '').trim();
           if (!conversationId) return;
 
-	          // 只处理 Workstudio 主动发起的 run_task（避免被主窗口聊天流拖慢）。
-	          if (!trackedRunConversationsRef.current.has(conversationId)) return;
-	          const mappedBubbleId =
-	            symbolAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
-	            folderAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
-	            null;
-	          const nowMs = Date.now();
-	          if (symbolAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
-	            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
-	          }
-	          if (folderAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
-	            folderAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
-	          }
-	          const symFirstWaiter = symbolAnalysisFirstRunEventWaitersRef.current.get(conversationId);
-	          if (symFirstWaiter) {
-	            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-	            symFirstWaiter();
-	          }
-	          const folderFirstWaiter = folderAnalysisFirstRunEventWaitersRef.current.get(conversationId);
-	          if (folderFirstWaiter) {
-	            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-	            folderFirstWaiter();
-	          }
+          // 只处理 Workstudio 主动发起的 run_task（避免被主窗口聊天流拖慢）。
+          if (!trackedRunConversationsRef.current.has(conversationId)) return;
+          const mappedBubbleId =
+            symbolAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
+            folderAnalysisBubbleIdByConversationIdRef.current.get(conversationId) ??
+            null;
+          const nowMs = Date.now();
+          if (symbolAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
+            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
+          }
+          if (folderAnalysisBubbleIdByConversationIdRef.current.has(conversationId)) {
+            folderAnalysisLastRunEventAtMsByConversationIdRef.current.set(conversationId, nowMs);
+          }
+          const symFirstWaiter = symbolAnalysisFirstRunEventWaitersRef.current.get(conversationId);
+          if (symFirstWaiter) {
+            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            symFirstWaiter();
+          }
+          const folderFirstWaiter = folderAnalysisFirstRunEventWaitersRef.current.get(conversationId);
+          if (folderFirstWaiter) {
+            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            folderFirstWaiter();
+          }
 
           if (payload.type === 'turn_started') {
             setTurnIndex(conversationId, payload.turnId, payload.turnIndex);
@@ -3220,260 +3221,260 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             return;
           }
 
-		          if (payload.type === 'done') {
-		            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
-		            flushPending();
-		            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (symCompletionWaiter) {
-		              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              symCompletionWaiter();
-		            }
-		            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (folderCompletionWaiter) {
-		              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              folderCompletionWaiter();
-		            }
+          if (payload.type === 'done') {
+            // 收尾前先 flush，避免最后一批 token 被节流队列丢弃
+            flushPending();
+            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
+            if (symCompletionWaiter) {
+              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+              symCompletionWaiter();
+            }
+            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
+            if (folderCompletionWaiter) {
+              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+              folderCompletionWaiter();
+            }
 
-		            const doneAtMs = Date.now();
-		            const bubbleForSave =
-		              aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
-		              (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
-		            const latencyMs = bubbleForSave?.startedAtMs ? Math.max(0, doneAtMs - bubbleForSave.startedAtMs) : undefined;
-		            const isAbortedByUser = bubbleForSave?.status === 'error' && bubbleForSave.error === '已中止';
-		            if (isAbortedByUser && bubbleForSave?.kind === 'symbol_analysis') {
-		              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
-	            }
-		            if (isAbortedByUser && bubbleForSave?.kind === 'folder_analysis') {
-		              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
-		            }
+            const doneAtMs = Date.now();
+            const bubbleForSave =
+              aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
+              (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
+            const latencyMs = bubbleForSave?.startedAtMs ? Math.max(0, doneAtMs - bubbleForSave.startedAtMs) : undefined;
+            const isAbortedByUser = bubbleForSave?.status === 'error' && bubbleForSave.error === '已中止';
+            if (isAbortedByUser && bubbleForSave?.kind === 'symbol_analysis') {
+              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
+            }
+            if (isAbortedByUser && bubbleForSave?.kind === 'folder_analysis') {
+              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForSave.id);
+            }
 
-		            if (!isAbortedByUser) {
-		              setAiBubbles((prev) => {
-		                const next = prev.map((b) => {
-		                  const matches =
-		                    (b.conversationId ?? '').trim() === conversationId || (mappedBubbleId && b.id === mappedBubbleId);
-		                  if (!matches) return b;
-		                  const bound = (b.conversationId ?? '').trim() === conversationId ? b : { ...b, conversationId };
-		                  const blocks = bound.blocks ?? [];
-		                  const hasAnyTextBlock = blocks.some((blk) => blk.type === 'text');
-		                  const nextBlocks = hasAnyTextBlock
-		                    ? blocks
-		                    : [
-		                      ...blocks,
-	                      {
-	                        id: `${payload.turnId}:assistant_text:final`,
-	                        type: 'text',
-	                        format: payload.format ?? 'markdown',
-	                        text: payload.fullContent ?? '',
-	                        turnId: payload.turnId,
-	                        turnIndex: getTurnIndex(conversationId, payload.turnId),
-		                      } as MessageBlock,
-		                    ];
+            if (!isAbortedByUser) {
+              setAiBubbles((prev) => {
+                const next = prev.map((b) => {
+                  const matches =
+                    (b.conversationId ?? '').trim() === conversationId || (mappedBubbleId && b.id === mappedBubbleId);
+                  if (!matches) return b;
+                  const bound = (b.conversationId ?? '').trim() === conversationId ? b : { ...b, conversationId };
+                  const blocks = bound.blocks ?? [];
+                  const hasAnyTextBlock = blocks.some((blk) => blk.type === 'text');
+                  const nextBlocks = hasAnyTextBlock
+                    ? blocks
+                    : [
+                      ...blocks,
+                      {
+                        id: `${payload.turnId}:assistant_text:final`,
+                        type: 'text',
+                        format: payload.format ?? 'markdown',
+                        text: payload.fullContent ?? '',
+                        turnId: payload.turnId,
+                        turnIndex: getTurnIndex(conversationId, payload.turnId),
+                      } as MessageBlock,
+                    ];
 
-		                  return {
-		                    ...bound,
-		                    status: 'done' as WorkstudioAiBubbleStatus,
-		                    assistantMessageId: payload.assistantMessageId ?? bound.assistantMessageId,
-		                    blocks: nextBlocks,
-		                    latencyMs,
-		                    modelRef: bound.modelRef || payload.model || undefined,
-		                  };
-		                });
-		                aiBubblesRef.current = next;
-		                return next;
-		              });
-	            }
+                  return {
+                    ...bound,
+                    status: 'done' as WorkstudioAiBubbleStatus,
+                    assistantMessageId: payload.assistantMessageId ?? bound.assistantMessageId,
+                    blocks: nextBlocks,
+                    latencyMs,
+                    modelRef: bound.modelRef || payload.model || undefined,
+                  };
+                });
+                aiBubblesRef.current = next;
+                return next;
+              });
+            }
 
-	            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
-	            if (!isAbortedByUser && !savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
-	              savedSymbolAnalysisByConversationId.add(conversationId);
-	              void (async () => {
-		                const meta = bubbleForSave.analysisMeta!;
-		                const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
-		                const timeoutMsRaw = Number(settings?.timeoutMs ?? 20000);
-		                const timeoutMs = Number.isFinite(timeoutMsRaw)
-		                  ? Math.max(2000, Math.min(180000, Math.floor(timeoutMsRaw)))
-		                  : 20000;
+            // 符号分析：把最终结果落盘到 workstudio_symbol_analyses，并刷新右键菜单/缓存。
+            if (!isAbortedByUser && !savedSymbolAnalysisByConversationId.has(conversationId) && bubbleForSave?.analysisMeta) {
+              savedSymbolAnalysisByConversationId.add(conversationId);
+              void (async () => {
+                const meta = bubbleForSave.analysisMeta!;
+                const settings = useConfigStore.getState().config?.codeIntelligence?.symbolAnalysis ?? null;
+                const timeoutMsRaw = Number(settings?.timeoutMs ?? 20000);
+                const timeoutMs = Number.isFinite(timeoutMsRaw)
+                  ? Math.max(2000, Math.min(180000, Math.floor(timeoutMsRaw)))
+                  : 20000;
 
-		                const doSave = async (attempt: 'first' | 'retry') => {
-		                  const res = await withTimeout(
-		                    saveWorkstudioSymbolAnalysis({
-		                      ...meta,
-		                      answerMd: payload.fullContent ?? '',
-		                      modelRef: bubbleForSave.modelRef,
-		                      latencyMs,
-		                    }),
-		                    timeoutMs,
-		                    `阶段超时：save_workstudio_symbol_analysis (${attempt})`
-			                  );
-				                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-				                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-				                  setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
-				                  setSymbolAnalysisSummaryCache((prev) => ({
-				                    ...prev,
-					                    [cacheKey]: {
-					                      symbolKey: res.symbolKey,
-					                      symbolSource: res.symbolSource,
-					                      healthLevel: res.healthLevel,
-					                      verdict: res.verdict,
-					                      confidence: res.confidence,
-					                      diagnosisSummary: res.diagnosisSummary,
-					                      diagnosisCounts: res.diagnosisCounts,
-				                      updatedAt: res.updatedAt,
-				                    },
-				                  }));
-				                  setOutlineMenu((prev) => {
-				                    if (!prev) return prev;
-				                    if (prev.filePath !== meta.filePath) return prev;
-				                    if (prev.item.key !== meta.symbolKey) return prev;
-				                    return { ...prev, analysis: res, analysisExists: true };
-			                  });
-			                };
+                const doSave = async (attempt: 'first' | 'retry') => {
+                  const res = await withTimeout(
+                    saveWorkstudioSymbolAnalysis({
+                      ...meta,
+                      answerMd: payload.fullContent ?? '',
+                      modelRef: bubbleForSave.modelRef,
+                      latencyMs,
+                    }),
+                    timeoutMs,
+                    `阶段超时：save_workstudio_symbol_analysis (${attempt})`
+                  );
+                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                  setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+                  setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+                  setSymbolAnalysisSummaryCache((prev) => ({
+                    ...prev,
+                    [cacheKey]: {
+                      symbolKey: res.symbolKey,
+                      symbolSource: res.symbolSource,
+                      healthLevel: res.healthLevel,
+                      verdict: res.verdict,
+                      confidence: res.confidence,
+                      diagnosisSummary: res.diagnosisSummary,
+                      diagnosisCounts: res.diagnosisCounts,
+                      updatedAt: res.updatedAt,
+                    },
+                  }));
+                  setOutlineMenu((prev) => {
+                    if (!prev) return prev;
+                    if (prev.filePath !== meta.filePath) return prev;
+                    if (prev.item.key !== meta.symbolKey) return prev;
+                    return { ...prev, analysis: res, analysisExists: true };
+                  });
+                };
 
-		                try {
-		                  await doSave('first');
-		                } catch (err) {
-		                  const msg = toErrorMessage(err);
-		                  void showGlobalError(
-		                    'Workstudio 符号分析落盘失败（将自动重试一次）',
-		                    [
-		                      `stage=save_workstudio_symbol_analysis`,
-		                      `attempt=first`,
-		                      `conversationId=${conversationId}`,
-		                      `bubbleId=${bubbleForSave.id}`,
-		                      `workstudioId=${meta.workstudioId}`,
-		                      `filePath=${meta.filePath}`,
-		                      `symbolKey=${meta.symbolKey}`,
-		                      `symbol=${meta.symbolName} (${meta.symbolKind})`,
-		                      `agent=${bubbleForSave.agentName ?? ''}`,
-		                      `modelRef=${bubbleForSave.modelRef ?? ''}`,
-		                      '',
-		                      msg,
-		                    ].join('\n'),
-		                    err
-		                  );
+                try {
+                  await doSave('first');
+                } catch (err) {
+                  const msg = toErrorMessage(err);
+                  void showGlobalError(
+                    'Workstudio 符号分析落盘失败（将自动重试一次）',
+                    [
+                      `stage=save_workstudio_symbol_analysis`,
+                      `attempt=first`,
+                      `conversationId=${conversationId}`,
+                      `bubbleId=${bubbleForSave.id}`,
+                      `workstudioId=${meta.workstudioId}`,
+                      `filePath=${meta.filePath}`,
+                      `symbolKey=${meta.symbolKey}`,
+                      `symbol=${meta.symbolName} (${meta.symbolKind})`,
+                      `agent=${bubbleForSave.agentName ?? ''}`,
+                      `modelRef=${bubbleForSave.modelRef ?? ''}`,
+                      '',
+                      msg,
+                    ].join('\n'),
+                    err
+                  );
 
-		                  try {
-		                    await new Promise((r) => setTimeout(r, 800));
-		                    await doSave('retry');
-		                  } catch (retryErr) {
-		                    const retryMsg = toErrorMessage(retryErr);
-		                    savedSymbolAnalysisByConversationId.delete(conversationId);
-		                    void showGlobalError(
-		                      'Workstudio 符号分析落盘重试失败',
-		                      [
-		                        `stage=save_workstudio_symbol_analysis`,
-		                        `attempt=retry`,
-		                        `conversationId=${conversationId}`,
-		                        `bubbleId=${bubbleForSave.id}`,
-		                        `workstudioId=${meta.workstudioId}`,
-		                        `filePath=${meta.filePath}`,
-		                        `symbolKey=${meta.symbolKey}`,
-		                        `symbol=${meta.symbolName} (${meta.symbolKind})`,
-		                        `agent=${bubbleForSave.agentName ?? ''}`,
-		                        `modelRef=${bubbleForSave.modelRef ?? ''}`,
-		                        '',
-		                        retryMsg,
-		                      ].join('\n'),
-		                      retryErr
-		                    );
-		                  }
-		                }
-	              })();
-	            }
+                  try {
+                    await new Promise((r) => setTimeout(r, 800));
+                    await doSave('retry');
+                  } catch (retryErr) {
+                    const retryMsg = toErrorMessage(retryErr);
+                    savedSymbolAnalysisByConversationId.delete(conversationId);
+                    void showGlobalError(
+                      'Workstudio 符号分析落盘重试失败',
+                      [
+                        `stage=save_workstudio_symbol_analysis`,
+                        `attempt=retry`,
+                        `conversationId=${conversationId}`,
+                        `bubbleId=${bubbleForSave.id}`,
+                        `workstudioId=${meta.workstudioId}`,
+                        `filePath=${meta.filePath}`,
+                        `symbolKey=${meta.symbolKey}`,
+                        `symbol=${meta.symbolName} (${meta.symbolKind})`,
+                        `agent=${bubbleForSave.agentName ?? ''}`,
+                        `modelRef=${bubbleForSave.modelRef ?? ''}`,
+                        '',
+                        retryMsg,
+                      ].join('\n'),
+                      retryErr
+                    );
+                  }
+                }
+              })();
+            }
 
-	            // 文件夹分析：把最终结果落盘到 workstudio_folder_analyses，并刷新 Explorer 缓存/上色。
-	            if (
-	              !isAbortedByUser &&
-	              !savedFolderAnalysisByConversationId.has(conversationId) &&
-	              bubbleForSave?.kind === 'folder_analysis' &&
-	              bubbleForSave.folderAnalysisMeta
-	            ) {
-	              savedFolderAnalysisByConversationId.add(conversationId);
-	              void (async () => {
-	                const meta = bubbleForSave.folderAnalysisMeta!;
-	                const settings = useConfigStore.getState().config?.codeIntelligence?.folderAnalysis ?? null;
-	                const timeoutMsRaw = Number((settings as any)?.timeoutMs ?? 30000);
-	                const timeoutMs = Number.isFinite(timeoutMsRaw)
-	                  ? Math.max(2000, Math.min(180000, Math.floor(timeoutMsRaw)))
-	                  : 30000;
+            // 文件夹分析：把最终结果落盘到 workstudio_folder_analyses，并刷新 Explorer 缓存/上色。
+            if (
+              !isAbortedByUser &&
+              !savedFolderAnalysisByConversationId.has(conversationId) &&
+              bubbleForSave?.kind === 'folder_analysis' &&
+              bubbleForSave.folderAnalysisMeta
+            ) {
+              savedFolderAnalysisByConversationId.add(conversationId);
+              void (async () => {
+                const meta = bubbleForSave.folderAnalysisMeta!;
+                const settings = useConfigStore.getState().config?.codeIntelligence?.folderAnalysis ?? null;
+                const timeoutMsRaw = Number((settings as any)?.timeoutMs ?? 30000);
+                const timeoutMs = Number.isFinite(timeoutMsRaw)
+                  ? Math.max(2000, Math.min(180000, Math.floor(timeoutMsRaw)))
+                  : 30000;
 
-	                const doSave = async (attempt: 'first' | 'retry') => {
-	                  const res = await withTimeout(
-	                    saveWorkstudioFolderAnalysis({
-	                      workstudioId: meta.workstudioId,
-	                      folderPath: meta.folderPath,
-	                      answerMd: payload.fullContent ?? '',
-	                      modelRef: bubbleForSave.modelRef,
-	                      latencyMs,
-	                    }),
-	                    timeoutMs,
-	                    `阶段超时：save_workstudio_folder_analysis (${attempt})`
-	                  );
-	                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
-	                  setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-	                  setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
-	                  setFolderAnalysisSummaryCache((prev) => ({
-	                    ...prev,
-	                    [cacheKey]: {
-	                      folderPath: res.folderPath,
-	                      healthLevel: res.healthLevel,
-	                      verdict: res.verdict,
-	                      confidence: res.confidence,
-	                      diagnosisSummary: res.diagnosisSummary,
-	                      diagnosisCounts: res.diagnosisCounts,
-	                      updatedAt: res.updatedAt,
-	                    },
-	                  }));
-	                };
+                const doSave = async (attempt: 'first' | 'retry') => {
+                  const res = await withTimeout(
+                    saveWorkstudioFolderAnalysis({
+                      workstudioId: meta.workstudioId,
+                      folderPath: meta.folderPath,
+                      answerMd: payload.fullContent ?? '',
+                      modelRef: bubbleForSave.modelRef,
+                      latencyMs,
+                    }),
+                    timeoutMs,
+                    `阶段超时：save_workstudio_folder_analysis (${attempt})`
+                  );
+                  const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+                  setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+                  setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+                  setFolderAnalysisSummaryCache((prev) => ({
+                    ...prev,
+                    [cacheKey]: {
+                      folderPath: res.folderPath,
+                      healthLevel: res.healthLevel,
+                      verdict: res.verdict,
+                      confidence: res.confidence,
+                      diagnosisSummary: res.diagnosisSummary,
+                      diagnosisCounts: res.diagnosisCounts,
+                      updatedAt: res.updatedAt,
+                    },
+                  }));
+                };
 
-	                try {
-	                  await doSave('first');
-	                } catch (err) {
-	                  const msg = toErrorMessage(err);
-	                  void showGlobalError(
-	                    'Workstudio 文件夹分析落盘失败（将自动重试一次）',
-	                    [
-	                      `stage=save_workstudio_folder_analysis`,
-	                      `attempt=first`,
-	                      `conversationId=${conversationId}`,
-	                      `bubbleId=${bubbleForSave.id}`,
-	                      `workstudioId=${meta.workstudioId}`,
-	                      `folderPath=${meta.folderPath}`,
-	                      `agent=${bubbleForSave.agentName ?? ''}`,
-	                      `modelRef=${bubbleForSave.modelRef ?? ''}`,
-	                      '',
-	                      msg,
-	                    ].join('\n'),
-	                    err
-	                  );
+                try {
+                  await doSave('first');
+                } catch (err) {
+                  const msg = toErrorMessage(err);
+                  void showGlobalError(
+                    'Workstudio 文件夹分析落盘失败（将自动重试一次）',
+                    [
+                      `stage=save_workstudio_folder_analysis`,
+                      `attempt=first`,
+                      `conversationId=${conversationId}`,
+                      `bubbleId=${bubbleForSave.id}`,
+                      `workstudioId=${meta.workstudioId}`,
+                      `folderPath=${meta.folderPath}`,
+                      `agent=${bubbleForSave.agentName ?? ''}`,
+                      `modelRef=${bubbleForSave.modelRef ?? ''}`,
+                      '',
+                      msg,
+                    ].join('\n'),
+                    err
+                  );
 
-	                  try {
-	                    await new Promise((r) => setTimeout(r, 800));
-	                    await doSave('retry');
-	                  } catch (retryErr) {
-	                    const retryMsg = toErrorMessage(retryErr);
-	                    savedFolderAnalysisByConversationId.delete(conversationId);
-	                    void showGlobalError(
-	                      'Workstudio 文件夹分析落盘重试失败',
-	                      [
-	                        `stage=save_workstudio_folder_analysis`,
-	                        `attempt=retry`,
-	                        `conversationId=${conversationId}`,
-	                        `bubbleId=${bubbleForSave.id}`,
-	                        `workstudioId=${meta.workstudioId}`,
-	                        `folderPath=${meta.folderPath}`,
-	                        `agent=${bubbleForSave.agentName ?? ''}`,
-	                        `modelRef=${bubbleForSave.modelRef ?? ''}`,
-	                        '',
-	                        retryMsg,
-	                      ].join('\n'),
-	                      retryErr
-	                    );
-	                  }
-	                }
-	              })();
-	            }
+                  try {
+                    await new Promise((r) => setTimeout(r, 800));
+                    await doSave('retry');
+                  } catch (retryErr) {
+                    const retryMsg = toErrorMessage(retryErr);
+                    savedFolderAnalysisByConversationId.delete(conversationId);
+                    void showGlobalError(
+                      'Workstudio 文件夹分析落盘重试失败',
+                      [
+                        `stage=save_workstudio_folder_analysis`,
+                        `attempt=retry`,
+                        `conversationId=${conversationId}`,
+                        `bubbleId=${bubbleForSave.id}`,
+                        `workstudioId=${meta.workstudioId}`,
+                        `folderPath=${meta.folderPath}`,
+                        `agent=${bubbleForSave.agentName ?? ''}`,
+                        `modelRef=${bubbleForSave.modelRef ?? ''}`,
+                        '',
+                        retryMsg,
+                      ].join('\n'),
+                      retryErr
+                    );
+                  }
+                }
+              })();
+            }
 
             // 释放“该符号正在分析中/队列中”的锁，允许后续重新分析。
             {
@@ -3486,209 +3487,209 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
                 activeSymbolAnalysisKeysRef.current.delete(fallbackKey);
               }
-		            }
+            }
 
-		            // 释放“该文件夹正在分析中/队列中”的锁，允许后续重新分析。
-		            {
-		              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
-		              if (analysisKey) {
-		                activeFolderAnalysisKeysRef.current.delete(analysisKey);
-		                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
-		              } else if (bubbleForSave?.folderAnalysisMeta) {
-		                const meta = bubbleForSave.folderAnalysisMeta;
-		                const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
-		                activeFolderAnalysisKeysRef.current.delete(fallbackKey);
-		              }
-		            }
+            // 释放“该文件夹正在分析中/队列中”的锁，允许后续重新分析。
+            {
+              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
+              if (analysisKey) {
+                activeFolderAnalysisKeysRef.current.delete(analysisKey);
+                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
+              } else if (bubbleForSave?.folderAnalysisMeta) {
+                const meta = bubbleForSave.folderAnalysisMeta;
+                const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+                activeFolderAnalysisKeysRef.current.delete(fallbackKey);
+              }
+            }
 
-		            // 结束后清理缓冲与追踪标记（避免残留定时 flush）。
-		            {
-		              const bubbleId = bubbleForSave?.id ?? mappedBubbleId;
-		              if (bubbleId) {
-		                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		              }
-		            }
-		            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
-		            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
-		            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
-		            pendingByConversationId.delete(conversationId);
-		            turnIndexByConversationId.delete(conversationId);
-		            trackedRunConversationsRef.current.delete(conversationId);
-		            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-		            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-		            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
-		            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
-		            scheduleSymbolAnalysisRunsRef.current?.();
-		            scheduleFolderAnalysisRunsRef.current?.();
-		            return;
-		          }
+            // 结束后清理缓冲与追踪标记（避免残留定时 flush）。
+            {
+              const bubbleId = bubbleForSave?.id ?? mappedBubbleId;
+              if (bubbleId) {
+                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+              }
+            }
+            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+            pendingByConversationId.delete(conversationId);
+            turnIndexByConversationId.delete(conversationId);
+            trackedRunConversationsRef.current.delete(conversationId);
+            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+            scheduleSymbolAnalysisRunsRef.current?.();
+            scheduleFolderAnalysisRunsRef.current?.();
+            return;
+          }
 
-		          if (payload.type === 'error') {
-		            flushPending();
-		            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (symCompletionWaiter) {
-		              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              symCompletionWaiter();
-		            }
-		            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
-		            if (folderCompletionWaiter) {
-		              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
-		              folderCompletionWaiter();
-		            }
-		            const bubbleForCancel =
-		              aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
-		              (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
-		            const isAbortedByUser = bubbleForCancel?.status === 'error' && bubbleForCancel.error === '已中止';
-		            if (isAbortedByUser && bubbleForCancel?.kind === 'symbol_analysis') {
-		              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
-		            }
-		            if (isAbortedByUser && bubbleForCancel?.kind === 'folder_analysis') {
-		              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
-		            }
-			            const errorMessage = isAbortedByUser ? '已中止' : payload.error || 'Unknown error';
-			            const errorTurnId = (payload.turnId ?? '').trim();
-			            const errorTurnIndex = errorTurnId ? getTurnIndex(conversationId, errorTurnId) : undefined;
-			            const protocolDebugLines = buildProtocolDebugLines(payload.debugInfo ?? null);
-			            setAiBubbles((prev) => {
-			              const next = prev.map((b) => {
-		                const matches =
-		                  (b.conversationId ?? '').trim() === conversationId || (mappedBubbleId && b.id === mappedBubbleId);
-		                if (!matches) return b;
-		                const bound = (b.conversationId ?? '').trim() === conversationId ? b : { ...b, conversationId };
-		                const turns = bound.turns ? bound.turns.slice() : [];
-		                if (errorTurnId) {
-		                  const idx = turns.findIndex((t) => t.turnId === errorTurnId);
-		                  const existing = idx >= 0 ? turns[idx] : undefined;
-		                  const nextTurn: MessageTurn = {
-		                    turnId: errorTurnId,
-		                    turnIndex: existing?.turnIndex ?? errorTurnIndex ?? 0,
-		                    status: 'failed',
-		                    hasDebugInfo:
-		                      Boolean(payload.debugInfo) ||
-		                      Boolean(existing?.hasDebugInfo) ||
-		                      Boolean(existing?.debugInfo),
-		                    debugInfo: payload.debugInfo ?? existing?.debugInfo,
-		                    usage: existing?.usage,
-		                    model: existing?.model,
-		                  };
-		                  if (idx === -1) turns.push(nextTurn);
-		                  else turns[idx] = nextTurn;
-		                }
-		                return {
-		                  ...bound,
-		                  status: 'error' as WorkstudioAiBubbleStatus,
-		                  error: errorMessage,
-		                  assistantMessageId: payload.assistantMessageId ?? bound.assistantMessageId,
-		                  turns: turns.length > 0 ? turns : bound.turns,
-		                };
-		              });
-			              aiBubblesRef.current = next;
-			              return next;
-			            });
-			            if (!isAbortedByUser) {
-			              if (bubbleForCancel?.kind === 'folder_analysis') {
-			                const meta = bubbleForCancel.folderAnalysisMeta;
-			                void showGlobalError(
-			                  'Workstudio 文件夹分析运行失败',
-			                  [
-			                    `stage=run:event:error`,
-			                    `conversationId=${conversationId}`,
-			                    `turnId=${payload.turnId ?? ''}`,
-			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
-			                    `workstudioId=${meta?.workstudioId ?? ''}`,
-			                    `folderPath=${meta?.folderPath ?? ''}`,
-			                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
-			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
-			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
-			                    '',
-			                    errorMessage,
-			                    ...(protocolDebugLines.length > 0
-			                      ? ['', '协议层原始信息：', ...protocolDebugLines]
-			                      : []),
-			                  ].join('\n'),
-			                  new Error(errorMessage)
-			                );
-			              } else {
-			                const meta = bubbleForCancel?.analysisMeta;
-			                void showGlobalError(
-			                  'Workstudio 符号分析运行失败',
-			                  [
-			                    `stage=run:event:error`,
-			                    `conversationId=${conversationId}`,
-			                    `turnId=${payload.turnId ?? ''}`,
-			                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
-			                    `workstudioId=${meta?.workstudioId ?? ''}`,
-			                    `filePath=${meta?.filePath ?? ''}`,
-			                    `symbolKey=${meta?.symbolKey ?? ''}`,
-			                    `symbol=${meta?.symbolName ?? ''} (${meta?.symbolKind ?? ''})`,
-			                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
-			                    `agent=${bubbleForCancel?.agentName ?? ''}`,
-			                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
-			                    '',
-			                    errorMessage,
-			                    ...(protocolDebugLines.length > 0
-			                      ? ['', '协议层原始信息：', ...protocolDebugLines]
-			                      : []),
-			                  ].join('\n'),
-			                  new Error(errorMessage)
-			                );
-			              }
-			            }
-		            {
-		              const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
-		              if (analysisKey) {
-	                activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	                symbolAnalysisKeyByConversationIdRef.current.delete(conversationId);
-	              } else {
-	                const bubble =
-	                  aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
-	                  (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
-	                if (bubble?.analysisMeta) {
-	                  const meta = bubble.analysisMeta;
-	                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-	                  activeSymbolAnalysisKeysRef.current.delete(fallbackKey);
-	                }
-	              }
-	            }
-		            {
-		              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
-		              if (analysisKey) {
-		                activeFolderAnalysisKeysRef.current.delete(analysisKey);
-		                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
-		              } else {
-		                const bubble =
-		                  aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
-		                  (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
-		                if (bubble?.folderAnalysisMeta) {
-		                  const meta = bubble.folderAnalysisMeta;
-		                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
-		                  activeFolderAnalysisKeysRef.current.delete(fallbackKey);
-		                }
-		              }
-		            }
-		            {
-		              const bubbleId = bubbleForCancel?.id ?? mappedBubbleId;
-		              if (bubbleId) {
-		                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		              }
-		            }
-		            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
-		            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
-		            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
-		            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
-		            pendingByConversationId.delete(conversationId);
-		            turnIndexByConversationId.delete(conversationId);
-		            trackedRunConversationsRef.current.delete(conversationId);
-		            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-		            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
-		            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
-		            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
-		            scheduleSymbolAnalysisRunsRef.current?.();
-		            scheduleFolderAnalysisRunsRef.current?.();
-		          }
+          if (payload.type === 'error') {
+            flushPending();
+            const symCompletionWaiter = symbolAnalysisCompletionWaitersRef.current.get(conversationId);
+            if (symCompletionWaiter) {
+              symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+              symCompletionWaiter();
+            }
+            const folderCompletionWaiter = folderAnalysisCompletionWaitersRef.current.get(conversationId);
+            if (folderCompletionWaiter) {
+              folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+              folderCompletionWaiter();
+            }
+            const bubbleForCancel =
+              aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
+              (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
+            const isAbortedByUser = bubbleForCancel?.status === 'error' && bubbleForCancel.error === '已中止';
+            if (isAbortedByUser && bubbleForCancel?.kind === 'symbol_analysis') {
+              cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
+            }
+            if (isAbortedByUser && bubbleForCancel?.kind === 'folder_analysis') {
+              cancelledFolderAnalysisBubbleIdsRef.current.delete(bubbleForCancel.id);
+            }
+            const errorMessage = isAbortedByUser ? '已中止' : payload.error || 'Unknown error';
+            const errorTurnId = (payload.turnId ?? '').trim();
+            const errorTurnIndex = errorTurnId ? getTurnIndex(conversationId, errorTurnId) : undefined;
+            const protocolDebugLines = buildProtocolDebugLines(payload.debugInfo ?? null);
+            setAiBubbles((prev) => {
+              const next = prev.map((b) => {
+                const matches =
+                  (b.conversationId ?? '').trim() === conversationId || (mappedBubbleId && b.id === mappedBubbleId);
+                if (!matches) return b;
+                const bound = (b.conversationId ?? '').trim() === conversationId ? b : { ...b, conversationId };
+                const turns = bound.turns ? bound.turns.slice() : [];
+                if (errorTurnId) {
+                  const idx = turns.findIndex((t) => t.turnId === errorTurnId);
+                  const existing = idx >= 0 ? turns[idx] : undefined;
+                  const nextTurn: MessageTurn = {
+                    turnId: errorTurnId,
+                    turnIndex: existing?.turnIndex ?? errorTurnIndex ?? 0,
+                    status: 'failed',
+                    hasDebugInfo:
+                      Boolean(payload.debugInfo) ||
+                      Boolean(existing?.hasDebugInfo) ||
+                      Boolean(existing?.debugInfo),
+                    debugInfo: payload.debugInfo ?? existing?.debugInfo,
+                    usage: existing?.usage,
+                    model: existing?.model,
+                  };
+                  if (idx === -1) turns.push(nextTurn);
+                  else turns[idx] = nextTurn;
+                }
+                return {
+                  ...bound,
+                  status: 'error' as WorkstudioAiBubbleStatus,
+                  error: errorMessage,
+                  assistantMessageId: payload.assistantMessageId ?? bound.assistantMessageId,
+                  turns: turns.length > 0 ? turns : bound.turns,
+                };
+              });
+              aiBubblesRef.current = next;
+              return next;
+            });
+            if (!isAbortedByUser) {
+              if (bubbleForCancel?.kind === 'folder_analysis') {
+                const meta = bubbleForCancel.folderAnalysisMeta;
+                void showGlobalError(
+                  'Workstudio 文件夹分析运行失败',
+                  [
+                    `stage=run:event:error`,
+                    `conversationId=${conversationId}`,
+                    `turnId=${payload.turnId ?? ''}`,
+                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
+                    `workstudioId=${meta?.workstudioId ?? ''}`,
+                    `folderPath=${meta?.folderPath ?? ''}`,
+                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
+                    `agent=${bubbleForCancel?.agentName ?? ''}`,
+                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
+                    '',
+                    errorMessage,
+                    ...(protocolDebugLines.length > 0
+                      ? ['', '协议层原始信息：', ...protocolDebugLines]
+                      : []),
+                  ].join('\n'),
+                  new Error(errorMessage)
+                );
+              } else {
+                const meta = bubbleForCancel?.analysisMeta;
+                void showGlobalError(
+                  'Workstudio 符号分析运行失败',
+                  [
+                    `stage=run:event:error`,
+                    `conversationId=${conversationId}`,
+                    `turnId=${payload.turnId ?? ''}`,
+                    `bubbleId=${bubbleForCancel?.id ?? mappedBubbleId ?? ''}`,
+                    `workstudioId=${meta?.workstudioId ?? ''}`,
+                    `filePath=${meta?.filePath ?? ''}`,
+                    `symbolKey=${meta?.symbolKey ?? ''}`,
+                    `symbol=${meta?.symbolName ?? ''} (${meta?.symbolKind ?? ''})`,
+                    `assistantMessageId=${payload.assistantMessageId ?? ''}`,
+                    `agent=${bubbleForCancel?.agentName ?? ''}`,
+                    `modelRef=${bubbleForCancel?.modelRef ?? ''}`,
+                    '',
+                    errorMessage,
+                    ...(protocolDebugLines.length > 0
+                      ? ['', '协议层原始信息：', ...protocolDebugLines]
+                      : []),
+                  ].join('\n'),
+                  new Error(errorMessage)
+                );
+              }
+            }
+            {
+              const analysisKey = symbolAnalysisKeyByConversationIdRef.current.get(conversationId);
+              if (analysisKey) {
+                activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+                symbolAnalysisKeyByConversationIdRef.current.delete(conversationId);
+              } else {
+                const bubble =
+                  aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
+                  (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
+                if (bubble?.analysisMeta) {
+                  const meta = bubble.analysisMeta;
+                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                  activeSymbolAnalysisKeysRef.current.delete(fallbackKey);
+                }
+              }
+            }
+            {
+              const analysisKey = folderAnalysisKeyByConversationIdRef.current.get(conversationId);
+              if (analysisKey) {
+                activeFolderAnalysisKeysRef.current.delete(analysisKey);
+                folderAnalysisKeyByConversationIdRef.current.delete(conversationId);
+              } else {
+                const bubble =
+                  aiBubblesRef.current.find((b) => (b.conversationId ?? '').trim() === conversationId) ??
+                  (mappedBubbleId ? aiBubblesRef.current.find((b) => b.id === mappedBubbleId) ?? null : null);
+                if (bubble?.folderAnalysisMeta) {
+                  const meta = bubble.folderAnalysisMeta;
+                  const fallbackKey = `${meta.workstudioId}::${normalizeFsPath(meta.folderPath)}`;
+                  activeFolderAnalysisKeysRef.current.delete(fallbackKey);
+                }
+              }
+            }
+            {
+              const bubbleId = bubbleForCancel?.id ?? mappedBubbleId;
+              if (bubbleId) {
+                symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+                folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+              }
+            }
+            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+            folderAnalysisBubbleIdByConversationIdRef.current.delete(conversationId);
+            symbolAnalysisCompletionWaitersRef.current.delete(conversationId);
+            folderAnalysisCompletionWaitersRef.current.delete(conversationId);
+            pendingByConversationId.delete(conversationId);
+            turnIndexByConversationId.delete(conversationId);
+            trackedRunConversationsRef.current.delete(conversationId);
+            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            folderAnalysisFirstRunEventWaitersRef.current.delete(conversationId);
+            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+            folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversationId);
+            scheduleSymbolAnalysisRunsRef.current?.();
+            scheduleFolderAnalysisRunsRef.current?.();
+          }
         });
       } catch {
         // ignore
@@ -3701,19 +3702,19 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         clearTimeout(flushTimer);
         flushTimer = null;
       }
-	      pendingByConversationId.clear();
-	      turnIndexByConversationId.clear();
-	      savedSymbolAnalysisByConversationId.clear();
-	      savedFolderAnalysisByConversationId.clear();
-	      symbolAnalysisKeyByConversationIdRef.current.clear();
-	      folderAnalysisKeyByConversationIdRef.current.clear();
-	      symbolAnalysisFirstRunEventWaitersRef.current.clear();
-	      folderAnalysisFirstRunEventWaitersRef.current.clear();
-	      symbolAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
-	      folderAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
-	      folderAnalysisCompletionWaitersRef.current.clear();
-	      symbolAnalysisCompletionWaitersRef.current.clear();
-	    };
+      pendingByConversationId.clear();
+      turnIndexByConversationId.clear();
+      savedSymbolAnalysisByConversationId.clear();
+      savedFolderAnalysisByConversationId.clear();
+      symbolAnalysisKeyByConversationIdRef.current.clear();
+      folderAnalysisKeyByConversationIdRef.current.clear();
+      symbolAnalysisFirstRunEventWaitersRef.current.clear();
+      folderAnalysisFirstRunEventWaitersRef.current.clear();
+      symbolAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
+      folderAnalysisLastRunEventAtMsByConversationIdRef.current.clear();
+      folderAnalysisCompletionWaitersRef.current.clear();
+      symbolAnalysisCompletionWaitersRef.current.clear();
+    };
   }, []);
   const lspStatusButtonRef = useRef<HTMLButtonElement | null>(null);
   const [explorerOpen, setExplorerOpen] = useState(true);
@@ -4098,7 +4099,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       languageId: activeTextLanguageId,
       priority: CODE_INDEX_PRIORITY_USER,
       force: true,
-    }).catch(() => {});
+    }).catch(() => { });
   }, [activeTextFileInFocusedPane, activeTextLanguageId, workstudioId, ws?.id]);
 
   const activeOutlineFilePath = useMemo(
@@ -4346,7 +4347,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       void codeIndexStartWorkspaceScan({
         workstudioId: wsId,
         priority: CODE_INDEX_PRIORITY_BACKGROUND,
-      }).catch(() => {});
+      }).catch(() => { });
     }, 900);
 
     return () => window.clearTimeout(timer);
@@ -4380,7 +4381,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [activeOutlineFilePath, outlineFileStateByPath, outlineItems.length, outlineLoading, isOutlineVisible]);
 
   useEffect(() => {
-    if (!isOutlineVisible) return;
     if (!isTauri()) {
       setOutlineItems([]);
       setOutlineSource('none');
@@ -4499,7 +4499,6 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       window.clearTimeout(timer);
     };
   }, [
-    isOutlineVisible,
     ws?.id,
     activeTextFileInFocusedPane?.id,
     activeTextFileInFocusedPane?.content,
@@ -4828,27 +4827,27 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     []
   );
 
-type LinkTarget = {
-  workstudioId?: string | null;
-  mainFolder?: string | null;
-  filePath: string;
-  line?: number | null;
-  column?: number | null;
-  endLine?: number | null;
-  endColumn?: number | null;
-};
+  type LinkTarget = {
+    workstudioId?: string | null;
+    mainFolder?: string | null;
+    filePath: string;
+    line?: number | null;
+    column?: number | null;
+    endLine?: number | null;
+    endColumn?: number | null;
+  };
 
-type ResolveWorkstudioFileTargetResult = {
-  resolvedPath: string;
-  strategy: string;
-  usedSearch: boolean;
-  displayPath: string;
-};
+  type ResolveWorkstudioFileTargetResult = {
+    resolvedPath: string;
+    strategy: string;
+    usedSearch: boolean;
+    displayPath: string;
+  };
 
-type OpenFromLinkErrorInfo = {
-  message: string;
-  details?: string;
-};
+  type OpenFromLinkErrorInfo = {
+    message: string;
+    details?: string;
+  };
 
   const openLinkSeqRef = useRef(0);
   const openedFromUrlRef = useRef(false);
@@ -5384,6 +5383,14 @@ type OpenFromLinkErrorInfo = {
     }
   }, [dbg, getActiveTabIdForPane, openFileAtPath, revealFileInExplorer, uiStateRestored, workstudioId, ws]);
 
+  // 始终持有最新的 openLinkTarget 引用，供事件监听器使用。
+  // 这样事件监听器无需将 openLinkTarget 放入 deps，避免 uiStateRestored 每次翻转
+  // （uiStateRestored 是 openLinkTarget 的 dep）时监听器反复重注册，从而产生双重触发。
+  const openLinkTargetRef = useRef(openLinkTarget);
+  useEffect(() => {
+    openLinkTargetRef.current = openLinkTarget;
+  }, [openLinkTarget]);
+
   const canNavigateBack = useMemo(() => {
     const paneId = resolvedFocusedPaneId;
     if (!paneId) return false;
@@ -5831,114 +5838,114 @@ type OpenFromLinkErrorInfo = {
     [workstudioId]
   );
 
-		  const ensureSymbolAnalysis = useCallback(
-		    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
-		      if (!workstudioId) return null;
-		      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-	      const cache = symbolAnalysisCacheRef.current;
-	      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
-	        return cache[cacheKey] ?? null;
-	      }
+  const ensureSymbolAnalysis = useCallback(
+    async (filePath: string, symbolKey: string): Promise<WorkstudioSymbolAnalysis | null> => {
+      if (!workstudioId) return null;
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+      const cache = symbolAnalysisCacheRef.current;
+      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
+        return cache[cacheKey] ?? null;
+      }
 
-		      try {
-		        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
-		        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-		        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
-		        setSymbolAnalysisSummaryCache((prev) => ({
-		          ...prev,
-			          [cacheKey]: res
-			            ? {
-			                symbolKey: res.symbolKey,
-			                symbolSource: res.symbolSource,
-			                healthLevel: res.healthLevel,
-			                verdict: res.verdict,
-			                confidence: res.confidence,
-			                diagnosisSummary: res.diagnosisSummary,
-			                diagnosisCounts: res.diagnosisCounts,
-			                updatedAt: res.updatedAt,
-			              }
-			            : null,
-			        }));
-		        return res;
-		      } catch (err) {
-		        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
-		        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-		        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
-		        setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
-		        return null;
-		      }
-		    },
-			    [makeSymbolAnalysisCacheKey, workstudioId]
-			  );
+      try {
+        const res = await getWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
+        setSymbolAnalysisSummaryCache((prev) => ({
+          ...prev,
+          [cacheKey]: res
+            ? {
+              symbolKey: res.symbolKey,
+              symbolSource: res.symbolSource,
+              healthLevel: res.healthLevel,
+              verdict: res.verdict,
+              confidence: res.confidence,
+              diagnosisSummary: res.diagnosisSummary,
+              diagnosisCounts: res.diagnosisCounts,
+              updatedAt: res.updatedAt,
+            }
+            : null,
+        }));
+        return res;
+      } catch (err) {
+        console.warn('[Workstudio][Outline] getWorkstudioSymbolAnalysis failed:', err);
+        setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+        setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+        setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+        return null;
+      }
+    },
+    [makeSymbolAnalysisCacheKey, workstudioId]
+  );
 
-		  const ensureFolderAnalysis = useCallback(
-		    async (folderPath: string): Promise<WorkstudioFolderAnalysis | null> => {
-		      if (!workstudioId) return null;
-		      const cacheKey = makeFolderAnalysisCacheKey(folderPath);
-		      const cache = folderAnalysisCacheRef.current;
-		      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
-		        return cache[cacheKey] ?? null;
-		      }
+  const ensureFolderAnalysis = useCallback(
+    async (folderPath: string): Promise<WorkstudioFolderAnalysis | null> => {
+      if (!workstudioId) return null;
+      const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+      const cache = folderAnalysisCacheRef.current;
+      if (Object.prototype.hasOwnProperty.call(cache, cacheKey)) {
+        return cache[cacheKey] ?? null;
+      }
 
-		      try {
-		        const res = await getWorkstudioFolderAnalysis({ workstudioId, folderPath });
-		        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-		        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
-		        setFolderAnalysisSummaryCache((prev) => ({
-		          ...prev,
-		          [cacheKey]: res
-		            ? {
-		                folderPath: res.folderPath,
-		                healthLevel: res.healthLevel,
-		                verdict: res.verdict,
-		                confidence: res.confidence,
-		                diagnosisSummary: res.diagnosisSummary,
-		                diagnosisCounts: res.diagnosisCounts,
-		                updatedAt: res.updatedAt,
-		              }
-		            : null,
-		        }));
-		        return res;
-		      } catch (err) {
-		        console.warn('[Workstudio][Explorer] getWorkstudioFolderAnalysis failed:', err);
-		        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-		        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
-		        setFolderAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
-		        return null;
-		      }
-		    },
-		    [makeFolderAnalysisCacheKey, workstudioId]
-		  );
+      try {
+        const res = await getWorkstudioFolderAnalysis({ workstudioId, folderPath });
+        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: Boolean(res) }));
+        setFolderAnalysisSummaryCache((prev) => ({
+          ...prev,
+          [cacheKey]: res
+            ? {
+              folderPath: res.folderPath,
+              healthLevel: res.healthLevel,
+              verdict: res.verdict,
+              confidence: res.confidence,
+              diagnosisSummary: res.diagnosisSummary,
+              diagnosisCounts: res.diagnosisCounts,
+              updatedAt: res.updatedAt,
+            }
+            : null,
+        }));
+        return res;
+      } catch (err) {
+        console.warn('[Workstudio][Explorer] getWorkstudioFolderAnalysis failed:', err);
+        setFolderAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+        setFolderAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+        setFolderAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+        return null;
+      }
+    },
+    [makeFolderAnalysisCacheKey, workstudioId]
+  );
 
-		  // Explorer: prefetch folder analysis summaries on workstudio open.
-		  useEffect(() => {
-		    if (!workstudioId) return;
-		    if (!isTauri()) return;
-		    const wsId = workstudioId;
-		    let cancelled = false;
-		    void (async () => {
-		      try {
-		        const rows = await listWorkstudioFolderAnalysisSummaries({ workstudioId: wsId });
-		        if (cancelled) return;
-		        const nextSummaries: Record<string, WorkstudioFolderAnalysisSummary | null> = {};
-		        const nextExists: Record<string, boolean> = {};
-		        for (const raw of rows ?? []) {
-		          const folderPath = normalizeFsPath(String((raw as any)?.folderPath ?? '').trim());
-		          if (!folderPath) continue;
-		          const cacheKey = makeFolderAnalysisCacheKey(folderPath);
-		          nextSummaries[cacheKey] = { ...(raw as any), folderPath } as WorkstudioFolderAnalysisSummary;
-		          nextExists[cacheKey] = true;
-		        }
-		        setFolderAnalysisSummaryCache(nextSummaries);
-		        setFolderAnalysisExistsCache(nextExists);
-		      } catch (err) {
-		        console.warn('[Workstudio][Explorer] listWorkstudioFolderAnalysisSummaries failed:', err);
-		      }
-		    })();
-		    return () => {
-		      cancelled = true;
-		    };
-		  }, [makeFolderAnalysisCacheKey, workstudioId, ws?.id]);
+  // Explorer: prefetch folder analysis summaries on workstudio open.
+  useEffect(() => {
+    if (!workstudioId) return;
+    if (!isTauri()) return;
+    const wsId = workstudioId;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await listWorkstudioFolderAnalysisSummaries({ workstudioId: wsId });
+        if (cancelled) return;
+        const nextSummaries: Record<string, WorkstudioFolderAnalysisSummary | null> = {};
+        const nextExists: Record<string, boolean> = {};
+        for (const raw of rows ?? []) {
+          const folderPath = normalizeFsPath(String((raw as any)?.folderPath ?? '').trim());
+          if (!folderPath) continue;
+          const cacheKey = makeFolderAnalysisCacheKey(folderPath);
+          nextSummaries[cacheKey] = { ...(raw as any), folderPath } as WorkstudioFolderAnalysisSummary;
+          nextExists[cacheKey] = true;
+        }
+        setFolderAnalysisSummaryCache(nextSummaries);
+        setFolderAnalysisExistsCache(nextExists);
+      } catch (err) {
+        console.warn('[Workstudio][Explorer] listWorkstudioFolderAnalysisSummaries failed:', err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [makeFolderAnalysisCacheKey, workstudioId, ws?.id]);
 
   const reloadChatWithFileSummaries = useCallback(async () => {
     if (!workstudioId || !isTauri()) return;
@@ -6038,309 +6045,309 @@ type OpenFromLinkErrorInfo = {
     };
   }, [listChatWithThreadsForFile, reloadChatWithFileSummaries, workstudioId]);
 
-			  // Outline: proactively refresh analysis status for the active file on page open / file switch.
-			  // This avoids "right click to refresh" UX.
-				  useEffect(() => {
-			    if (!isOutlineVisible) return;
-			    if (outlineLoading) return;
-			    if (!workstudioId) return;
-			    const filePath = activeOutlineFilePath;
-			    if (!filePath) return;
-			    if (outlineItems.length === 0) return;
+  // Outline: proactively refresh analysis status for the active file on page open / file switch.
+  // This avoids "right click to refresh" UX.
+  useEffect(() => {
+    if (!isOutlineVisible) return;
+    if (outlineLoading) return;
+    if (!workstudioId) return;
+    const filePath = activeOutlineFilePath;
+    if (!filePath) return;
+    if (outlineItems.length === 0) return;
 
-			    const key = `${workstudioId}::${normalizeFsPath(filePath)}`;
-			    const forceRefresh = pendingOutlineAnalysisRefreshByFileRef.current.has(key);
-			    const outlineKeys = Array.from(collectOutlineKeys(outlineItemsRef.current));
-			    if (outlineKeys.length === 0) return;
-			    outlineKeys.sort((a, b) => a.localeCompare(b));
-			    const fingerprint = outlineKeys.join('\n');
-			    const prevFingerprint = prefetchedSymbolAnalysisStatusByFileRef.current.get(key) ?? null;
-			    if (!forceRefresh && prevFingerprint === fingerprint) return;
-			    prefetchedSymbolAnalysisStatusByFileRef.current.set(key, fingerprint);
+    const key = `${workstudioId}::${normalizeFsPath(filePath)}`;
+    const forceRefresh = pendingOutlineAnalysisRefreshByFileRef.current.has(key);
+    const outlineKeys = Array.from(collectOutlineKeys(outlineItemsRef.current));
+    if (outlineKeys.length === 0) return;
+    outlineKeys.sort((a, b) => a.localeCompare(b));
+    const fingerprint = outlineKeys.join('\n');
+    const prevFingerprint = prefetchedSymbolAnalysisStatusByFileRef.current.get(key) ?? null;
+    if (!forceRefresh && prevFingerprint === fingerprint) return;
+    prefetchedSymbolAnalysisStatusByFileRef.current.set(key, fingerprint);
 
-			    let cancelled = false;
-			    const timer = window.setTimeout(() => {
-				      void (async () => {
-				        try {
-				          let analyzedSet = new Set<string>();
-				          const summaryByKey = new Map<string, WorkstudioSymbolAnalysisSummary>();
-				          try {
-				            const summariesRaw = await listWorkstudioSymbolAnalysisSummariesForFile({
-				              workstudioId,
-				              filePath,
-				            });
-				            for (const row of summariesRaw ?? []) {
-				              const symbolKey = String((row as any)?.symbolKey ?? '').trim();
-				              if (!symbolKey) continue;
-				              summaryByKey.set(symbolKey, { ...row, symbolKey });
-				            }
-				            analyzedSet = new Set(summaryByKey.keys());
-				          } catch {
-				            // Backward-compatible fallback: if backend doesn't support summaries yet, use keys only.
-				            const analyzedKeysRaw = await listWorkstudioSymbolAnalysisKeysForFile({
-				              workstudioId,
-				              filePath,
-				            });
-				            analyzedSet = new Set(
-				              (analyzedKeysRaw ?? [])
-				                .map((k) => String(k ?? '').trim())
-				                .filter((k) => Boolean(k))
-				            );
-				          }
-				          if (cancelled) return;
-				          // Outline 已刷新：丢弃旧请求，避免错误覆盖新状态。
-				          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) !== fingerprint) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          let analyzedSet = new Set<string>();
+          const summaryByKey = new Map<string, WorkstudioSymbolAnalysisSummary>();
+          try {
+            const summariesRaw = await listWorkstudioSymbolAnalysisSummariesForFile({
+              workstudioId,
+              filePath,
+            });
+            for (const row of summariesRaw ?? []) {
+              const symbolKey = String((row as any)?.symbolKey ?? '').trim();
+              if (!symbolKey) continue;
+              summaryByKey.set(symbolKey, { ...row, symbolKey });
+            }
+            analyzedSet = new Set(summaryByKey.keys());
+          } catch {
+            // Backward-compatible fallback: if backend doesn't support summaries yet, use keys only.
+            const analyzedKeysRaw = await listWorkstudioSymbolAnalysisKeysForFile({
+              workstudioId,
+              filePath,
+            });
+            analyzedSet = new Set(
+              (analyzedKeysRaw ?? [])
+                .map((k) => String(k ?? '').trim())
+                .filter((k) => Boolean(k))
+            );
+          }
+          if (cancelled) return;
+          // Outline 已刷新：丢弃旧请求，避免错误覆盖新状态。
+          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) !== fingerprint) return;
 
-				          // 用户手动刷新 Outline：检查 DB 冗余记录（符号已删除/重命名/位置变化等）。
-				          if (forceRefresh) {
-				            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
-				            const outlineKeySet = new Set(outlineKeys);
-				            const staleKeys = Array.from(analyzedSet).filter((k) => !outlineKeySet.has(k));
-				            if (staleKeys.length > 0) {
-				              const preview = staleKeys
-				                .slice(0, 12)
-				                .map((k) => `- ${k}`)
-				                .join('\n');
-				              const more = staleKeys.length > 12 ? `\n…以及另外 ${staleKeys.length - 12} 条` : '';
-				              const ok = await Promise.resolve(
-				                window.confirm(
-				                  [
-				                    `检测到当前文件存在 ${staleKeys.length} 条冗余的“符号分析”记录。`,
-				                    '',
-				                    '可能原因：符号被删除 / 重命名 / 行号变化（导致 key 变化）/ Outline 来源切换（LSP ↔ AST/CST）。',
-				                    '',
-				                    '是否删除这些旧记录？（需要你确认才会真正删除）',
-				                    '',
-				                    preview + more,
-				                  ].join('\n')
-				                )
-				              );
-				              if (ok) {
-				                let deleted = 0;
-				                for (let i = 0; i < staleKeys.length; i++) {
-				                  const symbolKey = staleKeys[i]!;
-				                  try {
-				                    // eslint-disable-next-line no-await-in-loop
-				                    await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
-				                    deleted += 1;
-				                  } catch {
-				                    // ignore single-row failure; keep going
-				                  }
-				                  // 避免长列表一次性阻塞 UI
-				                  if (i > 0 && i % 16 === 0) {
-				                    // eslint-disable-next-line no-await-in-loop
-				                    await new Promise((r) => setTimeout(r, 0));
-				                  }
-				                }
-				                if (deleted > 0) {
-				                  showNavToast(`已清理冗余分析记录：${deleted}/${staleKeys.length}`);
-				                }
-				              }
-				            }
-				          }
+          // 用户手动刷新 Outline：检查 DB 冗余记录（符号已删除/重命名/位置变化等）。
+          if (forceRefresh) {
+            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
+            const outlineKeySet = new Set(outlineKeys);
+            const staleKeys = Array.from(analyzedSet).filter((k) => !outlineKeySet.has(k));
+            if (staleKeys.length > 0) {
+              const preview = staleKeys
+                .slice(0, 12)
+                .map((k) => `- ${k}`)
+                .join('\n');
+              const more = staleKeys.length > 12 ? `\n…以及另外 ${staleKeys.length - 12} 条` : '';
+              const ok = await Promise.resolve(
+                window.confirm(
+                  [
+                    `检测到当前文件存在 ${staleKeys.length} 条冗余的“符号分析”记录。`,
+                    '',
+                    '可能原因：符号被删除 / 重命名 / 行号变化（导致 key 变化）/ Outline 来源切换（LSP ↔ AST/CST）。',
+                    '',
+                    '是否删除这些旧记录？（需要你确认才会真正删除）',
+                    '',
+                    preview + more,
+                  ].join('\n')
+                )
+              );
+              if (ok) {
+                let deleted = 0;
+                for (let i = 0; i < staleKeys.length; i++) {
+                  const symbolKey = staleKeys[i]!;
+                  try {
+                    // eslint-disable-next-line no-await-in-loop
+                    await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey });
+                    deleted += 1;
+                  } catch {
+                    // ignore single-row failure; keep going
+                  }
+                  // 避免长列表一次性阻塞 UI
+                  if (i > 0 && i % 16 === 0) {
+                    // eslint-disable-next-line no-await-in-loop
+                    await new Promise((r) => setTimeout(r, 0));
+                  }
+                }
+                if (deleted > 0) {
+                  showNavToast(`已清理冗余分析记录：${deleted}/${staleKeys.length}`);
+                }
+              }
+            }
+          }
 
-				          setSymbolAnalysisExistsCache((prev) => {
-				            let changed = false;
-				            const next: Record<string, boolean> = { ...prev };
-			            for (const symbolKey of outlineKeys) {
-			              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-		              const exists = analyzedSet.has(symbolKey);
-		              if (next[cacheKey] !== exists) {
-		                next[cacheKey] = exists;
-		                changed = true;
-		              }
-		            }
-		            return changed ? next : prev;
-		          });
+          setSymbolAnalysisExistsCache((prev) => {
+            let changed = false;
+            const next: Record<string, boolean> = { ...prev };
+            for (const symbolKey of outlineKeys) {
+              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+              const exists = analyzedSet.has(symbolKey);
+              if (next[cacheKey] !== exists) {
+                next[cacheKey] = exists;
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
 
-		          setSymbolAnalysisSummaryCache((prev) => {
-		            let changed = false;
-		            const next: Record<string, WorkstudioSymbolAnalysisSummary | null> = { ...prev };
-		            for (const symbolKey of outlineKeys) {
-		              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-		              const exists = analyzedSet.has(symbolKey);
-		              const incoming = exists
-		                ? summaryByKey.get(symbolKey) ?? (Object.prototype.hasOwnProperty.call(prev, cacheKey) ? prev[cacheKey] : null)
-		                : null;
-		              if (next[cacheKey] !== incoming) {
-		                next[cacheKey] = incoming ?? null;
-		                changed = true;
-		              }
-		            }
-		            return changed ? next : prev;
-		          });
+          setSymbolAnalysisSummaryCache((prev) => {
+            let changed = false;
+            const next: Record<string, WorkstudioSymbolAnalysisSummary | null> = { ...prev };
+            for (const symbolKey of outlineKeys) {
+              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+              const exists = analyzedSet.has(symbolKey);
+              const incoming = exists
+                ? summaryByKey.get(symbolKey) ?? (Object.prototype.hasOwnProperty.call(prev, cacheKey) ? prev[cacheKey] : null)
+                : null;
+              if (next[cacheKey] !== incoming) {
+                next[cacheKey] = incoming ?? null;
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
 
-		          // Warm negative cache (null) so the menu can render immediately without extra DB round-trips.
-		          // If DB says it exists, ensure we don't keep a stale `null` that would block `ensureSymbolAnalysis`.
-		          setSymbolAnalysisCache((prev) => {
-		            let changed = false;
-		            const next: Record<string, WorkstudioSymbolAnalysis | null> = { ...prev };
-	            for (const symbolKey of outlineKeys) {
-	              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
-	              const exists = analyzedSet.has(symbolKey);
-	              if (exists) {
-	                if (Object.prototype.hasOwnProperty.call(next, cacheKey) && next[cacheKey] === null) {
-	                  delete next[cacheKey];
-	                  changed = true;
-	                }
-	                continue;
-	              }
-	              if (!Object.prototype.hasOwnProperty.call(next, cacheKey) || next[cacheKey] !== null) {
-	                next[cacheKey] = null;
-	                changed = true;
-	              }
-	            }
-	            return changed ? next : prev;
-	          });
+          // Warm negative cache (null) so the menu can render immediately without extra DB round-trips.
+          // If DB says it exists, ensure we don't keep a stale `null` that would block `ensureSymbolAnalysis`.
+          setSymbolAnalysisCache((prev) => {
+            let changed = false;
+            const next: Record<string, WorkstudioSymbolAnalysis | null> = { ...prev };
+            for (const symbolKey of outlineKeys) {
+              const cacheKey = makeSymbolAnalysisCacheKey(filePath, symbolKey);
+              const exists = analyzedSet.has(symbolKey);
+              if (exists) {
+                if (Object.prototype.hasOwnProperty.call(next, cacheKey) && next[cacheKey] === null) {
+                  delete next[cacheKey];
+                  changed = true;
+                }
+                continue;
+              }
+              if (!Object.prototype.hasOwnProperty.call(next, cacheKey) || next[cacheKey] !== null) {
+                next[cacheKey] = null;
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
 
-	          setOutlineMenu((prev) => {
-	            if (!prev) return prev;
-	            if (normalizeFsPath(prev.filePath) !== normalizeFsPath(filePath)) return prev;
-	            const exists = analyzedSet.has(prev.item.key);
-	            if (prev.analysisExists === exists && (!prev.analysis || exists)) return prev;
-	            return {
-	              ...prev,
-	              analysisExists: exists,
-	              analysis: exists ? prev.analysis : null,
-	            };
-	          });
-		        } catch (err) {
-			          // Allow retry later.
-			          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) === fingerprint) {
-			            prefetchedSymbolAnalysisStatusByFileRef.current.delete(key);
-			          }
-			          console.warn('[Workstudio][Outline] prefetch analysis status failed:', err);
-			          // 避免手动刷新卡住：失败时也清除 pending 标记，让用户下次刷新可重试。
-			          if (forceRefresh) {
-			            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
-			          }
-			        }
-			      })();
-			    }, 180);
+          setOutlineMenu((prev) => {
+            if (!prev) return prev;
+            if (normalizeFsPath(prev.filePath) !== normalizeFsPath(filePath)) return prev;
+            const exists = analyzedSet.has(prev.item.key);
+            if (prev.analysisExists === exists && (!prev.analysis || exists)) return prev;
+            return {
+              ...prev,
+              analysisExists: exists,
+              analysis: exists ? prev.analysis : null,
+            };
+          });
+        } catch (err) {
+          // Allow retry later.
+          if (prefetchedSymbolAnalysisStatusByFileRef.current.get(key) === fingerprint) {
+            prefetchedSymbolAnalysisStatusByFileRef.current.delete(key);
+          }
+          console.warn('[Workstudio][Outline] prefetch analysis status failed:', err);
+          // 避免手动刷新卡住：失败时也清除 pending 标记，让用户下次刷新可重试。
+          if (forceRefresh) {
+            pendingOutlineAnalysisRefreshByFileRef.current.delete(key);
+          }
+        }
+      })();
+    }, 180);
 
-			    return () => {
-			      cancelled = true;
-			      window.clearTimeout(timer);
-			    };
-			  }, [
-			    activeOutlineFilePath,
-			    outlineItems,
-			    outlineLoading,
-			    isOutlineVisible,
-			    workstudioId,
-			    makeSymbolAnalysisCacheKey,
-			    showNavToast,
-			  ]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    activeOutlineFilePath,
+    outlineItems,
+    outlineLoading,
+    isOutlineVisible,
+    workstudioId,
+    makeSymbolAnalysisCacheKey,
+    showNavToast,
+  ]);
 
-		  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
-		    const kind = normalizeOutlineKind(kindRaw);
-		    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
-		    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
-	    if (kind === 'class') return '分析类';
-	    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
-	    return '分析符号';
-	  }, []);
+  const outlineAnalysisActionLabel = useCallback((kindRaw: string): string => {
+    const kind = normalizeOutlineKind(kindRaw);
+    if (OUTLINE_CALLABLE_KINDS.has(kind)) return '分析函数';
+    if (OUTLINE_VALUE_KINDS.has(kind)) return '分析变量';
+    if (kind === 'class') return '分析类';
+    if (OUTLINE_CONTAINER_KINDS.has(kind)) return '分析结构';
+    return '分析符号';
+  }, []);
 
-	  const buildSymbolAnalysisOutputContract = useCallback(
-	    (opts: { fileRefExample?: string }) => {
-	      const fileRefExample = String(opts.fileRefExample ?? '').trim();
-	      const lines: string[] = [
-	        '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Outline 上色）：',
-	        '',
-	        '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
-	        '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
-	        '',
-	        '```json',
-	        '{',
-	        '  "schema": "tauriai.symbol_diagnosis.v1",',
-	        '  "healthLevel": 10,',
-	        '  "verdict": "IMPROVABLE",',
-	        '  "confidence": 0.8,',
-	        '  "summary": "一句话诊断摘要（用于 tooltip）",',
-	        '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
-	        '}',
-	        '```',
-	        '',
-	        'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
-	        '',
-	        'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
-	        '',
-	        '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
-	        '- ## 诊断结论',
-	        '- ## Errors（致命问题）',
-	        '- ## Defects（缺陷/风险）',
-	        '- ## Improvements（可改进点）',
-	        '- ## 建议修改（最小改动优先）',
-	        '- ## 验证步骤',
-	        '',
-	        '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
-	      ];
-	      if (fileRefExample) {
-	        lines.push(`- 文件引用示例：\`${fileRefExample}\``);
-	      }
-	      lines.push(
-	        '',
-	        '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
-	      );
-	      return lines.join('\n');
-	    },
-	    []
-	  );
+  const buildSymbolAnalysisOutputContract = useCallback(
+    (opts: { fileRefExample?: string }) => {
+      const fileRefExample = String(opts.fileRefExample ?? '').trim();
+      const lines: string[] = [
+        '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Outline 上色）：',
+        '',
+        '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
+        '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
+        '',
+        '```json',
+        '{',
+        '  "schema": "tauriai.symbol_diagnosis.v1",',
+        '  "healthLevel": 10,',
+        '  "verdict": "IMPROVABLE",',
+        '  "confidence": 0.8,',
+        '  "summary": "一句话诊断摘要（用于 tooltip）",',
+        '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
+        '}',
+        '```',
+        '',
+        'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
+        '',
+        'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
+        '',
+        '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
+        '- ## 诊断结论',
+        '- ## Errors（致命问题）',
+        '- ## Defects（缺陷/风险）',
+        '- ## Improvements（可改进点）',
+        '- ## 建议修改（最小改动优先）',
+        '- ## 验证步骤',
+        '',
+        '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
+      ];
+      if (fileRefExample) {
+        lines.push(`- 文件引用示例：\`${fileRefExample}\``);
+      }
+      lines.push(
+        '',
+        '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+      );
+      return lines.join('\n');
+    },
+    []
+  );
 
-		  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
-		    const kind = normalizeOutlineKind(kindRaw);
-		    if (OUTLINE_CALLABLE_KINDS.has(kind)) {
-		      return '请分析该函数/方法，并调查其可能的业务调用路径（入口/上游调用者/下游依赖）；给出业务层解释与诊断（Errors/Defects/Improvements），并附上可执行的验证步骤（关键结论请带文件引用）。';
-		    }
-		    if (OUTLINE_VALUE_KINDS.has(kind)) {
-		      return '请对该变量/字段做引用分析（写入点/读取点/传递路径），解释其在系统中的作用与不变量；输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
-		    }
-		    if (OUTLINE_CONTAINER_KINDS.has(kind)) {
-		      return '请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述；并输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
-		    }
-		    return '请分析该符号在模块中的角色、用途与潜在问题；输出诊断（Errors/Defects/Improvements）与验证建议，并用文件引用支撑关键结论。';
-		  }, []);
+  const outlineAnalysisPromptPreview = useCallback((kindRaw: string): string => {
+    const kind = normalizeOutlineKind(kindRaw);
+    if (OUTLINE_CALLABLE_KINDS.has(kind)) {
+      return '请分析该函数/方法，并调查其可能的业务调用路径（入口/上游调用者/下游依赖）；给出业务层解释与诊断（Errors/Defects/Improvements），并附上可执行的验证步骤（关键结论请带文件引用）。';
+    }
+    if (OUTLINE_VALUE_KINDS.has(kind)) {
+      return '请对该变量/字段做引用分析（写入点/读取点/传递路径），解释其在系统中的作用与不变量；输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
+    }
+    if (OUTLINE_CONTAINER_KINDS.has(kind)) {
+      return '请分析该类型/容器符号。若代码片段较大，请优先做偏宏观的分析（职责边界、对外 API、关键成员分组、依赖/生命周期/并发/错误处理/扩展点），避免逐行复述；并输出诊断（Errors/Defects/Improvements）与验证建议（关键结论请带文件引用）。';
+    }
+    return '请分析该符号在模块中的角色、用途与潜在问题；输出诊断（Errors/Defects/Improvements）与验证建议，并用文件引用支撑关键结论。';
+  }, []);
 
-	  const buildFolderAnalysisOutputContract = useCallback(() => {
-	    const lines: string[] = [
-	      '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Explorer 上色）：',
-	      '',
-	      '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
-	      '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
-	      '',
-	      '```json',
-	      '{',
-	      '  "schema": "tauriai.folder_diagnosis.v1",',
-	      '  "healthLevel": 10,',
-	      '  "verdict": "IMPROVABLE",',
-	      '  "confidence": 0.8,',
-	      '  "summary": "一句话诊断摘要（用于 tooltip）",',
-	      '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
-	      '}',
-	      '```',
-	      '',
-	      'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
-	      '',
-	      'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
-	      '',
-	      '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
-	      '- ## 诊断结论',
-	      '- ## Errors（致命问题）',
-	      '- ## Defects（缺陷/风险）',
-	      '- ## Improvements（可改进点）',
-	      '- ## 建议修改（最小改动优先）',
-	      '- ## 验证步骤',
-	      '',
-	      '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
-	      '',
-	      '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
-	    ];
-	    return lines.join('\n');
-	  }, []);
+  const buildFolderAnalysisOutputContract = useCallback(() => {
+    const lines: string[] = [
+      '你是一名资深代码分析工程师。你需要输出“分析 + 诊断”。请严格遵守以下输出协议（用于 UI 解析与 Explorer 上色）：',
+      '',
+      '1) 你的回答必须以一个 ```json 代码块开始（第一行就是 ```json），且该 JSON 必须是严格 JSON（不要注释/尾逗号）。',
+      '2) JSON 必须包含以下字段（字段名必须完全一致，camelCase）：',
+      '',
+      '```json',
+      '{',
+      '  "schema": "tauriai.folder_diagnosis.v1",',
+      '  "healthLevel": 10,',
+      '  "verdict": "IMPROVABLE",',
+      '  "confidence": 0.8,',
+      '  "summary": "一句话诊断摘要（用于 tooltip）",',
+      '  "counts": { "errors": 0, "defects": 0, "improvements": 0 }',
+      '}',
+      '```',
+      '',
+      'verdict 只能从以下枚举中选 1 个：HEALTHY / IMPROVABLE / RISKY / CRITICAL / POSSIBLY_UNUSED。',
+      '',
+      'healthLevel 取值说明：10=最健康（亮绿），1=最危险（深红）。当存在“致命 bug / 安全风险 / 数据损坏风险”时，请明显降低 healthLevel。',
+      '',
+      '3) JSON 之后输出 Markdown 正文，必须包含以下章节（标题必须出现）：',
+      '- ## 诊断结论',
+      '- ## Errors（致命问题）',
+      '- ## Defects（缺陷/风险）',
+      '- ## Improvements（可改进点）',
+      '- ## 建议修改（最小改动优先）',
+      '- ## 验证步骤',
+      '',
+      '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
+      '',
+      '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+    ];
+    return lines.join('\n');
+  }, []);
 
-	  const folderAnalysisPromptPreview = useCallback((): string => {
-	    return '请对该文件夹做宏观结构分析 + 风险诊断：模块分层、入口与关键流程、数据/状态、依赖边界、错误处理/可观测性、测试；输出诊断（Errors/Defects/Improvements）与可执行的验证步骤（关键结论请带文件引用）。';
-	  }, []);
+  const folderAnalysisPromptPreview = useCallback((): string => {
+    return '请对该文件夹做宏观结构分析 + 风险诊断：模块分层、入口与关键流程、数据/状态、依赖边界、错误处理/可观测性、测试；输出诊断（Errors/Defects/Improvements）与可执行的验证步骤（关键结论请带文件引用）。';
+  }, []);
 
   const getActiveSymbolAnalysisStatus = useCallback(
     (filePathRaw: string, symbolKeyRaw: string): WorkstudioAiBubbleStatus | null => {
@@ -6467,524 +6474,524 @@ type OpenFromLinkErrorInfo = {
     }));
   }, []);
 
-	  const startQueuedSymbolAnalysis = useCallback(
-	    async (bubbleId: string, agentNameRaw: string) => {
-	      if (!workstudioId) return;
+  const startQueuedSymbolAnalysis = useCallback(
+    async (bubbleId: string, agentNameRaw: string) => {
+      if (!workstudioId) return;
 
-	      const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
-	      if (!bubble || bubble.kind !== 'symbol_analysis') return;
-	      if (bubble.status !== 'queued') return;
+      const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+      if (!bubble || bubble.kind !== 'symbol_analysis') return;
+      if (bubble.status !== 'queued') return;
 
-	      // 用户可能在 queued 阶段就点击了“中止”，此时直接标记并释放锁。
-	      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-	        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-	        const metaForKey = bubble.analysisMeta ?? null;
-	        if (metaForKey) {
-	          const analysisKey = makeSymbolAnalysisCacheKey(metaForKey.filePath, metaForKey.symbolKey);
-	          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	        }
-	        setAiBubbles((prev) => {
-		          const next = prev.map((b) =>
-		            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
-		          );
-		          aiBubblesRef.current = next;
-		          return next;
-		        });
-	        return;
-	      }
+      // 用户可能在 queued 阶段就点击了“中止”，此时直接标记并释放锁。
+      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+        const metaForKey = bubble.analysisMeta ?? null;
+        if (metaForKey) {
+          const analysisKey = makeSymbolAnalysisCacheKey(metaForKey.filePath, metaForKey.symbolKey);
+          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+        }
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+        return;
+      }
 
-	      const meta = bubble.analysisMeta ?? null;
-	      const code = String(bubble.analysisCode ?? '').trim();
-	      if (!meta || !code) {
-	        if (meta) {
+      const meta = bubble.analysisMeta ?? null;
+      const code = String(bubble.analysisCode ?? '').trim();
+      if (!meta || !code) {
+        if (meta) {
           const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
           activeSymbolAnalysisKeysRef.current.delete(analysisKey);
         }
         setAiBubbles((prev) => {
-	          const next = prev.map((b) =>
-	            b.id === bubbleId
-	              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '缺少符号分析的必要信息，无法启动任务' }
-	              : b
-	          );
-	          aiBubblesRef.current = next;
-	          return next;
-	        });
+          const next = prev.map((b) =>
+            b.id === bubbleId
+              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '缺少符号分析的必要信息，无法启动任务' }
+              : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
         return;
       }
 
       if (startingSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) return;
       startingSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
 
-	      const cfgStore = useConfigStore.getState();
-	      const agentName = String(agentNameRaw ?? '').trim() || '__system_symbol_analysis';
-	      const agent = cfgStore.getAgent(agentName);
-	      const modelRef = agent?.modelRef || cfgStore.getCurrentModelRef?.() || '';
-	      const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
-	      const symbolAnalysisThinkingParam: boolean | string = (() => {
-	        const rawLevel = (cfgStore.config?.codeIntelligence?.symbolAnalysis as any)?.thinkingLevel;
-	        const level: ThinkingLevel =
-	          rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'high' || rawLevel === 'xhigh'
-	            ? rawLevel
-	            : null;
+      const cfgStore = useConfigStore.getState();
+      const agentName = String(agentNameRaw ?? '').trim() || '__system_symbol_analysis';
+      const agent = cfgStore.getAgent(agentName);
+      const modelRef = agent?.modelRef || cfgStore.getCurrentModelRef?.() || '';
+      const analysisKey = makeSymbolAnalysisCacheKey(meta.filePath, meta.symbolKey);
+      const symbolAnalysisThinkingParam: boolean | string = (() => {
+        const rawLevel = (cfgStore.config?.codeIntelligence?.symbolAnalysis as any)?.thinkingLevel;
+        const level: ThinkingLevel =
+          rawLevel === 'low' || rawLevel === 'medium' || rawLevel === 'high' || rawLevel === 'xhigh'
+            ? rawLevel
+            : null;
 
-	        const providers = cfgStore.config?.providers ?? [];
-	        const apiProtocol = modelRef ? getApiProtocol(modelRef, providers) : 'chat_completions';
-	        const providerType = modelRef ? getProviderType(modelRef, providers) : undefined;
-	        const normalizedLevel: ThinkingLevel =
-	          providerType === 'google' && level === 'xhigh' ? 'high' : level;
+        const providers = cfgStore.config?.providers ?? [];
+        const apiProtocol = modelRef ? getApiProtocol(modelRef, providers) : 'chat_completions';
+        const providerType = modelRef ? getProviderType(modelRef, providers) : undefined;
+        const normalizedLevel: ThinkingLevel =
+          providerType === 'google' && level === 'xhigh' ? 'high' : level;
 
-	        if (apiProtocol === 'responses') {
-	          // Tauri invoke -> Rust Option<Value>: `null` 会被反序列化为 None，触发后端默认 "medium"。
-	          // 因此这里用 `false` 显式禁用 thinking；非空等级则直接传递强度字符串。
-	          return normalizedLevel === null ? false : normalizedLevel;
-	        }
+        if (apiProtocol === 'responses') {
+          // Tauri invoke -> Rust Option<Value>: `null` 会被反序列化为 None，触发后端默认 "medium"。
+          // 因此这里用 `false` 显式禁用 thinking；非空等级则直接传递强度字符串。
+          return normalizedLevel === null ? false : normalizedLevel;
+        }
 
-	        // chat_completions：无=>不思考，其它=>思考
-	        return normalizedLevel === null ? false : true;
-	      })();
+        // chat_completions：无=>不思考，其它=>思考
+        return normalizedLevel === null ? false : true;
+      })();
 
-	      // 先把 UI 状态切到“连接中”，避免 schedule 被重复触发导致重复启动。
-	      setAiBubbles((prev) => {
-	        const next = prev.map((b) =>
-	          b.id === bubbleId
-	            ? {
-	              ...b,
-	              status: 'connecting' as WorkstudioAiBubbleStatus,
-	              startedAtMs: Date.now(),
-	              agentName,
-	              modelRef: modelRef || b.modelRef,
-	              error: undefined,
-	            }
-	            : b
-	        );
-	        aiBubblesRef.current = next;
-	        return next;
-	      });
+      // 先把 UI 状态切到“连接中”，避免 schedule 被重复触发导致重复启动。
+      setAiBubbles((prev) => {
+        const next = prev.map((b) =>
+          b.id === bubbleId
+            ? {
+              ...b,
+              status: 'connecting' as WorkstudioAiBubbleStatus,
+              startedAtMs: Date.now(),
+              agentName,
+              modelRef: modelRef || b.modelRef,
+              error: undefined,
+            }
+            : b
+        );
+        aiBubblesRef.current = next;
+        return next;
+      });
 
-	      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-	        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-	        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	        setAiBubbles((prev) => {
-	          const next = prev.map((b) =>
-	            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
-	          );
-	          aiBubblesRef.current = next;
-	          return next;
-	        });
-	        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-	        return;
-	      }
+      if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+        return;
+      }
 
-		      let trackedConversationId: string | null = null;
-		      let runStage = 'init';
-		      const flowStartedAtMs = Date.now();
-		      const clampTimeoutMs = (v: unknown, fallback: number) => {
-		        const n = Number(v);
-		        if (!Number.isFinite(n)) return fallback;
-		        return Math.max(2000, Math.min(180000, Math.floor(n)));
-		      };
-		      try {
-		        const symbolAnalysisSettings = cfgStore.config?.codeIntelligence?.symbolAnalysis ?? null;
-		        const stageTimeoutMs = clampTimeoutMs(symbolAnalysisSettings?.timeoutMs, 20000);
-		        const runTaskTimeoutMs = Math.min(2 * 60 * 60 * 1000, Math.max(10 * 60 * 1000, stageTimeoutMs * 30));
+      let trackedConversationId: string | null = null;
+      let runStage = 'init';
+      const flowStartedAtMs = Date.now();
+      const clampTimeoutMs = (v: unknown, fallback: number) => {
+        const n = Number(v);
+        if (!Number.isFinite(n)) return fallback;
+        return Math.max(2000, Math.min(180000, Math.floor(n)));
+      };
+      try {
+        const symbolAnalysisSettings = cfgStore.config?.codeIntelligence?.symbolAnalysis ?? null;
+        const stageTimeoutMs = clampTimeoutMs(symbolAnalysisSettings?.timeoutMs, 20000);
+        const runTaskTimeoutMs = Math.min(2 * 60 * 60 * 1000, Math.max(10 * 60 * 1000, stageTimeoutMs * 30));
 
-		        const awaitStage = async <T,>(
-		          stageName: string,
-		          op: () => Promise<T>,
-		          timeoutMs: number
-		        ): Promise<T> => {
-		          runStage = stageName;
-		          if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-		            throw new Error('已中止');
-		          }
-		          let cancelPollTimer: number | null = null;
-		          let timeoutTimer: number | null = null;
-		          try {
-		            return await Promise.race([
-		              Promise.resolve().then(op),
-		              new Promise<T>((_, reject) => {
-		                cancelPollTimer = window.setInterval(() => {
-		                  if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-		                    reject(new Error('已中止'));
-		                  }
-		                }, 80);
-		              }),
-		              new Promise<T>((_, reject) => {
-		                timeoutTimer = window.setTimeout(() => {
-		                  reject(new Error(`阶段超时：${stageName}`));
-		                }, timeoutMs);
-		              }),
-		            ]);
-		          } finally {
-		            if (cancelPollTimer !== null) window.clearInterval(cancelPollTimer);
-		            if (timeoutTimer !== null) window.clearTimeout(timeoutTimer);
-		          }
-		        };
+        const awaitStage = async <T,>(
+          stageName: string,
+          op: () => Promise<T>,
+          timeoutMs: number
+        ): Promise<T> => {
+          runStage = stageName;
+          if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+            throw new Error('已中止');
+          }
+          let cancelPollTimer: number | null = null;
+          let timeoutTimer: number | null = null;
+          try {
+            return await Promise.race([
+              Promise.resolve().then(op),
+              new Promise<T>((_, reject) => {
+                cancelPollTimer = window.setInterval(() => {
+                  if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+                    reject(new Error('已中止'));
+                  }
+                }, 80);
+              }),
+              new Promise<T>((_, reject) => {
+                timeoutTimer = window.setTimeout(() => {
+                  reject(new Error(`阶段超时：${stageName}`));
+                }, timeoutMs);
+              }),
+            ]);
+          } finally {
+            if (cancelPollTimer !== null) window.clearInterval(cancelPollTimer);
+            if (timeoutTimer !== null) window.clearTimeout(timeoutTimer);
+          }
+        };
 
-		        // 确保任何“刚改完的 agent/toolset”先落盘，否则后端读取到旧配置会导致工具缺失。
-		        await awaitStage('flush_config_saves', async () => {
-		          await cfgStore.flushConfigSaves?.();
-		        }, stageTimeoutMs);
+        // 确保任何“刚改完的 agent/toolset”先落盘，否则后端读取到旧配置会导致工具缺失。
+        await awaitStage('flush_config_saves', async () => {
+          await cfgStore.flushConfigSaves?.();
+        }, stageTimeoutMs);
 
-		        const actionLabel = outlineAnalysisActionLabel(meta.symbolKind);
-		        const convTitleRaw = `${actionLabel}:${meta.symbolName}`;
-		        const convTitle = convTitleRaw.length > 64 ? `${convTitleRaw.slice(0, 64)}…` : convTitleRaw;
-		        const conversation = await awaitStage(
-		          'create_conversation',
-		          () => invoke<Conversation>('create_conversation', { title: convTitle }),
-		          stageTimeoutMs
-		        );
-		        trackedRunConversationsRef.current.add(conversation.id);
-		        trackedConversationId = conversation.id;
-		        symbolAnalysisKeyByConversationIdRef.current.set(conversation.id, analysisKey);
-		        symbolAnalysisConversationIdByBubbleIdRef.current.set(bubbleId, conversation.id);
-		        symbolAnalysisBubbleIdByConversationIdRef.current.set(conversation.id, bubbleId);
+        const actionLabel = outlineAnalysisActionLabel(meta.symbolKind);
+        const convTitleRaw = `${actionLabel}:${meta.symbolName}`;
+        const convTitle = convTitleRaw.length > 64 ? `${convTitleRaw.slice(0, 64)}…` : convTitleRaw;
+        const conversation = await awaitStage(
+          'create_conversation',
+          () => invoke<Conversation>('create_conversation', { title: convTitle }),
+          stageTimeoutMs
+        );
+        trackedRunConversationsRef.current.add(conversation.id);
+        trackedConversationId = conversation.id;
+        symbolAnalysisKeyByConversationIdRef.current.set(conversation.id, analysisKey);
+        symbolAnalysisConversationIdByBubbleIdRef.current.set(bubbleId, conversation.id);
+        symbolAnalysisBubbleIdByConversationIdRef.current.set(conversation.id, bubbleId);
 
-	        // 若用户在创建会话期间点击了“中止”，则不再继续启动 run_task。
-	        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-	          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-	          trackedRunConversationsRef.current.delete(conversation.id);
-	          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
-	          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-	          symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
-	          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	          setAiBubbles((prev) => {
-	            const next = prev.map((b) =>
-	              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
-	            );
-		            aiBubblesRef.current = next;
-		            return next;
-		          });
-	          return;
-	        }
+        // 若用户在创建会话期间点击了“中止”，则不再继续启动 run_task。
+        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+          trackedRunConversationsRef.current.delete(conversation.id);
+          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+          symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+          setAiBubbles((prev) => {
+            const next = prev.map((b) =>
+              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+            );
+            aiBubblesRef.current = next;
+            return next;
+          });
+          return;
+        }
 
-	        // 尽早把 conversationId 绑定到 bubble，避免“事件流先到但 bubble 还没绑定 conversationId”导致 UI 卡在 connecting。
-	        setAiBubbles((prev) => {
-	          const next = prev.map((b) =>
-	            b.id === bubbleId
-	              ? {
-	                  ...b,
-	                  conversationId: conversation.id,
-	                  agentName,
-	                  modelRef: modelRef || b.modelRef,
-	                }
-	              : b
-	          );
-	          aiBubblesRef.current = next;
-	          return next;
-		        });
+        // 尽早把 conversationId 绑定到 bubble，避免“事件流先到但 bubble 还没绑定 conversationId”导致 UI 卡在 connecting。
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId
+              ? {
+                ...b,
+                conversationId: conversation.id,
+                agentName,
+                modelRef: modelRef || b.modelRef,
+              }
+              : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
 
-		        // 绑定到当前 workstudio，确保工具默认 workdir/工作区提示词可用。
-		        await awaitStage(
-		          'update_conversation_metadata',
-		          () =>
-		            invoke('update_conversation_metadata', {
-		              conversationId: conversation.id,
-		              agentName,
-		              modelRef: modelRef || undefined,
-		              runMode: 'chat',
-		              thinkingMode: symbolAnalysisThinkingParam,
-		              workstudioId,
-		            }),
-		          stageTimeoutMs
-		        );
+        // 绑定到当前 workstudio，确保工具默认 workdir/工作区提示词可用。
+        await awaitStage(
+          'update_conversation_metadata',
+          () =>
+            invoke('update_conversation_metadata', {
+              conversationId: conversation.id,
+              agentName,
+              modelRef: modelRef || undefined,
+              runMode: 'chat',
+              thinkingMode: symbolAnalysisThinkingParam,
+              workstudioId,
+            }),
+          stageTimeoutMs
+        );
 
-		        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-		          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-		          trackedRunConversationsRef.current.delete(conversation.id);
-	          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
-	          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-	          symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
-	          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	          setAiBubbles((prev) => {
-	            const next = prev.map((b) =>
-	              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
-		            );
-		            aiBubblesRef.current = next;
-		            return next;
-		          });
-		          return;
-		        }
+        if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+          cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+          trackedRunConversationsRef.current.delete(conversation.id);
+          symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+          symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+          symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+          setAiBubbles((prev) => {
+            const next = prev.map((b) =>
+              b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' } : b
+            );
+            aiBubblesRef.current = next;
+            return next;
+          });
+          return;
+        }
 
-			        const userMessageId = crypto.randomUUID();
-			        const relPath = (() => {
-			          const main = normalizeFsPath(ws?.mainFolder ?? '');
-			          const fp = normalizeFsPath(meta.filePath);
+        const userMessageId = crypto.randomUUID();
+        const relPath = (() => {
+          const main = normalizeFsPath(ws?.mainFolder ?? '');
+          const fp = normalizeFsPath(meta.filePath);
           if (main && fp.startsWith(main)) {
             const trimmed = fp.slice(main.length).replace(/^\/+/, '');
             return trimmed || basename(fp);
           }
-	          return fp;
-	        })();
+          return fp;
+        })();
 
-			        const fileRefExample = `${relPath}#L${meta.selectionLine}C${meta.selectionColumn}`;
-			        const outputContract = buildSymbolAnalysisOutputContract({ fileRefExample });
+        const fileRefExample = `${relPath}#L${meta.selectionLine}C${meta.selectionColumn}`;
+        const outputContract = buildSymbolAnalysisOutputContract({ fileRefExample });
 
-			        const userContent = [
-			          outputContract,
-			          '',
-			          `${bubble.prompt || outlineAnalysisPromptPreview(meta.symbolKind)}`,
-			          '',
-			          `languageId: ${meta.languageId}`,
-	          `filePath: ${relPath}`,
-	          `symbol: ${meta.symbolName} (${meta.symbolKind})`,
-	          `location: ${meta.selectionLine}:${meta.selectionColumn}`,
-	          '',
-			          `\`\`\`${meta.languageId || 'text'}\n${code}\n\`\`\``,
-			        ].join('\n');
+        const userContent = [
+          outputContract,
+          '',
+          `${bubble.prompt || outlineAnalysisPromptPreview(meta.symbolKind)}`,
+          '',
+          `languageId: ${meta.languageId}`,
+          `filePath: ${relPath}`,
+          `symbol: ${meta.symbolName} (${meta.symbolKind})`,
+          `location: ${meta.selectionLine}:${meta.selectionColumn}`,
+          '',
+          `\`\`\`${meta.languageId || 'text'}\n${code}\n\`\`\``,
+        ].join('\n');
 
-		        const firstEventPromise = new Promise<void>((resolve) => {
-		          symbolAnalysisFirstRunEventWaitersRef.current.set(conversation.id, resolve);
-		        });
-		        const runTaskPromise = invoke('run_task', {
-		          conversationId: conversation.id,
-		          messageId: userMessageId,
-		          content: userContent,
-		          agentName,
-		          modelRef: modelRef || undefined,
-		          runMode: 'chat',
-		          thinking: symbolAnalysisThinkingParam,
-		          debugMode: cfgStore.config?.general?.debugMode ?? false,
-		        });
+        const firstEventPromise = new Promise<void>((resolve) => {
+          symbolAnalysisFirstRunEventWaitersRef.current.set(conversation.id, resolve);
+        });
+        const runTaskPromise = invoke('run_task', {
+          conversationId: conversation.id,
+          messageId: userMessageId,
+          content: userContent,
+          agentName,
+          modelRef: modelRef || undefined,
+          runMode: 'chat',
+          thinking: symbolAnalysisThinkingParam,
+          debugMode: cfgStore.config?.general?.debugMode ?? false,
+        });
 
-		        // 启动握手：短时间内至少应该收到 1 条 run:event（turn_started/turn_phase_started 等）或 run_task 返回。
-		        // 若二者都没有，则认为链路已卡死/事件被过滤，直接抛错让用户可观测。
-		        await awaitStage(
-		          'wait_first_run_event',
-		          () => Promise.race([firstEventPromise, runTaskPromise.then(() => undefined)]),
-		          stageTimeoutMs
-		        );
-			        // 继续等待 run_task 真正结束（兜底：若 run:event 丢失，仍可在下方 recover 从 DB 恢复 UI）。
-			        await awaitStage('run_task', () => runTaskPromise, runTaskTimeoutMs);
+        // 启动握手：短时间内至少应该收到 1 条 run:event（turn_started/turn_phase_started 等）或 run_task 返回。
+        // 若二者都没有，则认为链路已卡死/事件被过滤，直接抛错让用户可观测。
+        await awaitStage(
+          'wait_first_run_event',
+          () => Promise.race([firstEventPromise, runTaskPromise.then(() => undefined)]),
+          stageTimeoutMs
+        );
+        // 继续等待 run_task 真正结束（兜底：若 run:event 丢失，仍可在下方 recover 从 DB 恢复 UI）。
+        await awaitStage('run_task', () => runTaskPromise, runTaskTimeoutMs);
 
-			        // 等待 done/error 事件“落地到 UI”（短延迟），避免 run_task 已返回但 UI 事件稍后才处理，
-			        // 导致误判为“卡住”而触发不必要的 DB 恢复（增加 DB 竞争与误报）。
-			        {
-			          const completionPromise = new Promise<void>((resolve) => {
-			            symbolAnalysisCompletionWaitersRef.current.set(conversation.id, resolve);
-			          });
-			          await awaitStage(
-			            'wait_done_event_or_settle',
-			            () => Promise.race([completionPromise, new Promise<void>((r) => setTimeout(r, 600))]),
-			            stageTimeoutMs
-			          );
-			          symbolAnalysisCompletionWaitersRef.current.delete(conversation.id);
-			        }
+        // 等待 done/error 事件“落地到 UI”（短延迟），避免 run_task 已返回但 UI 事件稍后才处理，
+        // 导致误判为“卡住”而触发不必要的 DB 恢复（增加 DB 竞争与误报）。
+        {
+          const completionPromise = new Promise<void>((resolve) => {
+            symbolAnalysisCompletionWaitersRef.current.set(conversation.id, resolve);
+          });
+          await awaitStage(
+            'wait_done_event_or_settle',
+            () => Promise.race([completionPromise, new Promise<void>((r) => setTimeout(r, 600))]),
+            stageTimeoutMs
+          );
+          symbolAnalysisCompletionWaitersRef.current.delete(conversation.id);
+        }
 
-			        // 兜底：某些情况下 run:event 可能丢失/被过滤（或 bubble 尚未绑定 conversationId），导致 UI 永久停留在 connecting。
-			        // 但 run_task 已返回，说明后端已完成并落库；此处从 DB 拉取最后一条 assistant 消息来恢复 UI + 结果落盘。
-			        try {
-			          const bubbleAfterRun = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
-			          const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
-			          const shouldRecover = bubbleAfterRun ? ACTIVE_STATUSES.includes(bubbleAfterRun.status) : true;
-			          if (shouldRecover) {
-			            const msgs = await awaitStage(
-			              'recover_get_messages',
-			              async () => {
-			                const MAX_ATTEMPTS = 3;
-			                let lastErr: unknown = null;
-			                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-			                  if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
-			                    throw new Error('已中止');
-			                  }
-			                  try {
-			                    return await getMessages(conversation.id, 30);
-			                  } catch (e) {
-			                    lastErr = e;
-			                    const msg = toErrorMessage(e);
-			                    const isDbLock = msg.includes('DB lock 超时');
-			                    if (!isDbLock || attempt === MAX_ATTEMPTS) throw e;
-			                    await new Promise<void>((r) => window.setTimeout(r, 200 * attempt));
-			                  }
-			                }
-			                throw lastErr ?? new Error('recover_get_messages failed');
-			              },
-			              stageTimeoutMs
-			            );
-			            const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant') ?? null;
-			            const answerMdFromContent = String(lastAssistant?.content ?? '').trim();
-			            const answerMdFromBlocks = (() => {
-		              const blocks = lastAssistant?.blocks ?? [];
-		              const parts: string[] = [];
-		              for (const blk of blocks) {
-		                const anyBlk = blk as any;
-		                if (anyBlk && anyBlk.type === 'text' && typeof anyBlk.text === 'string') {
-		                  const t = String(anyBlk.text ?? '').trimEnd();
-		                  if (t) parts.push(t);
-		                }
-		              }
-		              return parts.join('\n').trim();
-		            })();
-		            const answerMd = answerMdFromContent || answerMdFromBlocks;
+        // 兜底：某些情况下 run:event 可能丢失/被过滤（或 bubble 尚未绑定 conversationId），导致 UI 永久停留在 connecting。
+        // 但 run_task 已返回，说明后端已完成并落库；此处从 DB 拉取最后一条 assistant 消息来恢复 UI + 结果落盘。
+        try {
+          const bubbleAfterRun = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+          const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+          const shouldRecover = bubbleAfterRun ? ACTIVE_STATUSES.includes(bubbleAfterRun.status) : true;
+          if (shouldRecover) {
+            const msgs = await awaitStage(
+              'recover_get_messages',
+              async () => {
+                const MAX_ATTEMPTS = 3;
+                let lastErr: unknown = null;
+                for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+                  if (cancelledSymbolAnalysisBubbleIdsRef.current.has(bubbleId)) {
+                    throw new Error('已中止');
+                  }
+                  try {
+                    return await getMessages(conversation.id, 30);
+                  } catch (e) {
+                    lastErr = e;
+                    const msg = toErrorMessage(e);
+                    const isDbLock = msg.includes('DB lock 超时');
+                    if (!isDbLock || attempt === MAX_ATTEMPTS) throw e;
+                    await new Promise<void>((r) => window.setTimeout(r, 200 * attempt));
+                  }
+                }
+                throw lastErr ?? new Error('recover_get_messages failed');
+              },
+              stageTimeoutMs
+            );
+            const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant') ?? null;
+            const answerMdFromContent = String(lastAssistant?.content ?? '').trim();
+            const answerMdFromBlocks = (() => {
+              const blocks = lastAssistant?.blocks ?? [];
+              const parts: string[] = [];
+              for (const blk of blocks) {
+                const anyBlk = blk as any;
+                if (anyBlk && anyBlk.type === 'text' && typeof anyBlk.text === 'string') {
+                  const t = String(anyBlk.text ?? '').trimEnd();
+                  if (t) parts.push(t);
+                }
+              }
+              return parts.join('\n').trim();
+            })();
+            const answerMd = answerMdFromContent || answerMdFromBlocks;
 
-	            const blocks: MessageBlock[] = (() => {
-	              const fromHistory = lastAssistant?.blocks ?? [];
-	              if (fromHistory.length > 0) return fromHistory;
-	              if (!answerMd) return [];
-	              return [
-	                {
-	                  id: `${lastAssistant?.id ?? conversation.id}:assistant_text:final`,
-	                  type: 'text',
-	                  format: 'markdown',
-	                  text: answerMd,
-	                } as MessageBlock,
-	              ];
-	            })();
+            const blocks: MessageBlock[] = (() => {
+              const fromHistory = lastAssistant?.blocks ?? [];
+              if (fromHistory.length > 0) return fromHistory;
+              if (!answerMd) return [];
+              return [
+                {
+                  id: `${lastAssistant?.id ?? conversation.id}:assistant_text:final`,
+                  type: 'text',
+                  format: 'markdown',
+                  text: answerMd,
+                } as MessageBlock,
+              ];
+            })();
 
-	            if (lastAssistant && (answerMd || blocks.length > 0)) {
-	              const doneAtMs = Date.now();
-	              const startedAtMs = bubbleAfterRun?.startedAtMs;
-	              const latencyMs =
-	                typeof startedAtMs === 'number' ? Math.max(0, doneAtMs - startedAtMs) : undefined;
+            if (lastAssistant && (answerMd || blocks.length > 0)) {
+              const doneAtMs = Date.now();
+              const startedAtMs = bubbleAfterRun?.startedAtMs;
+              const latencyMs =
+                typeof startedAtMs === 'number' ? Math.max(0, doneAtMs - startedAtMs) : undefined;
 
-	              setAiBubbles((prev) => {
-	                const next = prev.map((b) =>
-	                  b.id === bubbleId
-	                    ? {
-	                        ...b,
-	                        conversationId: conversation.id,
-	                        status: 'done' as WorkstudioAiBubbleStatus,
-		                        assistantMessageId: lastAssistant.id,
-		                        blocks: blocks.length > 0 ? blocks : b.blocks,
-		                        turns: lastAssistant.turns ?? b.turns,
-		                        modelRef: b.modelRef || lastAssistant.meta?.model || undefined,
-		                        latencyMs: b.latencyMs ?? latencyMs,
-		                      }
-	                    : b
-	                );
-	                aiBubblesRef.current = next;
-	                return next;
-	              });
+              setAiBubbles((prev) => {
+                const next = prev.map((b) =>
+                  b.id === bubbleId
+                    ? {
+                      ...b,
+                      conversationId: conversation.id,
+                      status: 'done' as WorkstudioAiBubbleStatus,
+                      assistantMessageId: lastAssistant.id,
+                      blocks: blocks.length > 0 ? blocks : b.blocks,
+                      turns: lastAssistant.turns ?? b.turns,
+                      modelRef: b.modelRef || lastAssistant.meta?.model || undefined,
+                      latencyMs: b.latencyMs ?? latencyMs,
+                    }
+                    : b
+                );
+                aiBubblesRef.current = next;
+                return next;
+              });
 
-				              if (answerMd && meta) {
-					                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
-					                  ...meta,
-					                  answerMd,
-					                  modelRef: bubbleAfterRun?.modelRef,
-					                  latencyMs,
-				                }), stageTimeoutMs);
-					                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
-					                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
-					                setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
-					                setSymbolAnalysisSummaryCache((prev) => ({
-					                  ...prev,
-					                  [cacheKey]: {
-					                    symbolKey: res.symbolKey,
-					                    healthLevel: res.healthLevel,
-					                    verdict: res.verdict,
-					                    confidence: res.confidence,
-					                    diagnosisSummary: res.diagnosisSummary,
-					                    diagnosisCounts: res.diagnosisCounts,
-					                    updatedAt: res.updatedAt,
-					                  },
-					                }));
-					                setOutlineMenu((prev) => {
-				                  if (!prev) return prev;
-				                  if (prev.filePath !== meta.filePath) return prev;
-				                  if (prev.item.key !== meta.symbolKey) return prev;
-		                  return { ...prev, analysis: res, analysisExists: true };
-		                });
-		              }
-		            }
+              if (answerMd && meta) {
+                const res = await awaitStage('recover_save_analysis', () => saveWorkstudioSymbolAnalysis({
+                  ...meta,
+                  answerMd,
+                  modelRef: bubbleAfterRun?.modelRef,
+                  latencyMs,
+                }), stageTimeoutMs);
+                const cacheKey = `${meta.workstudioId}::${normalizeFsPath(meta.filePath)}::${meta.symbolKey}`;
+                setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: res }));
+                setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: true }));
+                setSymbolAnalysisSummaryCache((prev) => ({
+                  ...prev,
+                  [cacheKey]: {
+                    symbolKey: res.symbolKey,
+                    healthLevel: res.healthLevel,
+                    verdict: res.verdict,
+                    confidence: res.confidence,
+                    diagnosisSummary: res.diagnosisSummary,
+                    diagnosisCounts: res.diagnosisCounts,
+                    updatedAt: res.updatedAt,
+                  },
+                }));
+                setOutlineMenu((prev) => {
+                  if (!prev) return prev;
+                  if (prev.filePath !== meta.filePath) return prev;
+                  if (prev.item.key !== meta.symbolKey) return prev;
+                  return { ...prev, analysis: res, analysisExists: true };
+                });
+              }
+            }
 
-	            // 资源回收（幂等）：即便 run:event 未触发 done/error，也确保不会占用 pool 或残留锁。
-		            trackedRunConversationsRef.current.delete(conversation.id);
-		            symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
-		            symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
-		            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversation.id);
-		            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversation.id);
-		            activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-		            scheduleSymbolAnalysisRunsRef.current?.();
-		          }
-		        } catch (err) {
-		          const msg = toErrorMessage(err);
-		          void showGlobalError(
-		            'Workstudio 符号分析恢复失败',
-		            [
-		              `stage=recover_after_run_task`,
-		              `runStage=${runStage}`,
-		              `conversationId=${conversation.id}`,
-		              `bubbleId=${bubbleId}`,
-		              `workstudioId=${workstudioId ?? ''}`,
-		              `filePath=${meta.filePath}`,
-		              `symbolKey=${meta.symbolKey}`,
-		              `symbol=${meta.symbolName} (${meta.symbolKind})`,
-		              `agent=${agentName}`,
-		              `modelRef=${modelRef}`,
-		              `elapsedMs=${Date.now() - flowStartedAtMs}`,
-		              '',
-		              msg,
-		            ].join('\n'),
-		            err
-		          );
-		        }
-		      } catch (err) {
-		        if (trackedConversationId) {
-		          trackedRunConversationsRef.current.delete(trackedConversationId);
-		          symbolAnalysisKeyByConversationIdRef.current.delete(trackedConversationId);
-		          symbolAnalysisBubbleIdByConversationIdRef.current.delete(trackedConversationId);
-		          symbolAnalysisFirstRunEventWaitersRef.current.delete(trackedConversationId);
-		          symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(trackedConversationId);
-		        }
-		        if (trackedConversationId) {
-		          // Best-effort：如果已经创建会话但后续阶段失败/用户中止，尝试中止后端任务，避免资源泄漏。
-		          void invoke('abort_run', { conversationId: trackedConversationId }).catch(() => {});
-		        }
-		        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-		        symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
-		        // 反查并清理 conversation -> bubble 映射（如果已创建会话但 trackedConversationId 未命中）。
-		        for (const [cid, bid] of symbolAnalysisBubbleIdByConversationIdRef.current.entries()) {
-	          if (bid === bubbleId) {
-	            symbolAnalysisBubbleIdByConversationIdRef.current.delete(cid);
-	            break;
-	          }
-		        }
-		        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-		        const isAborted = toErrorMessage(err) === '已中止';
-		        const message = isAborted ? '已中止' : toErrorMessage(err);
-		        if (!isAborted) {
-		          const lastEventAt = trackedConversationId
-		            ? symbolAnalysisLastRunEventAtMsByConversationIdRef.current.get(trackedConversationId)
-		            : undefined;
-		          void showGlobalError(
-		            'Workstudio 符号分析失败',
-		            [
-		              `stage=start_symbol_analysis`,
-		              `runStage=${runStage}`,
-		              `bubbleId=${bubbleId}`,
-		              `conversationId=${trackedConversationId ?? ''}`,
-		              `workstudioId=${workstudioId ?? ''}`,
-		              `filePath=${meta.filePath}`,
-		              `symbolKey=${meta.symbolKey}`,
-		              `symbol=${meta.symbolName} (${meta.symbolKind})`,
-		              `agent=${agentName}`,
-		              `modelRef=${modelRef}`,
-		              `elapsedMs=${Date.now() - flowStartedAtMs}`,
-		              `lastRunEventAtMs=${lastEventAt ?? ''}`,
-		              '',
-		              message,
-		            ].join('\n'),
-		            err
-		          );
-		        }
-		        setAiBubbles((prev) => {
-		          const next = prev.map((b) =>
-			            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: message } : b
-			          );
-		          aiBubblesRef.current = next;
-		          return next;
-		        });
-	      } finally {
-	        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
-	      }
+            // 资源回收（幂等）：即便 run:event 未触发 done/error，也确保不会占用 pool 或残留锁。
+            trackedRunConversationsRef.current.delete(conversation.id);
+            symbolAnalysisKeyByConversationIdRef.current.delete(conversation.id);
+            symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+            symbolAnalysisBubbleIdByConversationIdRef.current.delete(conversation.id);
+            symbolAnalysisFirstRunEventWaitersRef.current.delete(conversation.id);
+            symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(conversation.id);
+            activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+            scheduleSymbolAnalysisRunsRef.current?.();
+          }
+        } catch (err) {
+          const msg = toErrorMessage(err);
+          void showGlobalError(
+            'Workstudio 符号分析恢复失败',
+            [
+              `stage=recover_after_run_task`,
+              `runStage=${runStage}`,
+              `conversationId=${conversation.id}`,
+              `bubbleId=${bubbleId}`,
+              `workstudioId=${workstudioId ?? ''}`,
+              `filePath=${meta.filePath}`,
+              `symbolKey=${meta.symbolKey}`,
+              `symbol=${meta.symbolName} (${meta.symbolKind})`,
+              `agent=${agentName}`,
+              `modelRef=${modelRef}`,
+              `elapsedMs=${Date.now() - flowStartedAtMs}`,
+              '',
+              msg,
+            ].join('\n'),
+            err
+          );
+        }
+      } catch (err) {
+        if (trackedConversationId) {
+          trackedRunConversationsRef.current.delete(trackedConversationId);
+          symbolAnalysisKeyByConversationIdRef.current.delete(trackedConversationId);
+          symbolAnalysisBubbleIdByConversationIdRef.current.delete(trackedConversationId);
+          symbolAnalysisFirstRunEventWaitersRef.current.delete(trackedConversationId);
+          symbolAnalysisLastRunEventAtMsByConversationIdRef.current.delete(trackedConversationId);
+        }
+        if (trackedConversationId) {
+          // Best-effort：如果已经创建会话但后续阶段失败/用户中止，尝试中止后端任务，避免资源泄漏。
+          void invoke('abort_run', { conversationId: trackedConversationId }).catch(() => { });
+        }
+        activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+        symbolAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
+        // 反查并清理 conversation -> bubble 映射（如果已创建会话但 trackedConversationId 未命中）。
+        for (const [cid, bid] of symbolAnalysisBubbleIdByConversationIdRef.current.entries()) {
+          if (bid === bubbleId) {
+            symbolAnalysisBubbleIdByConversationIdRef.current.delete(cid);
+            break;
+          }
+        }
+        cancelledSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+        const isAborted = toErrorMessage(err) === '已中止';
+        const message = isAborted ? '已中止' : toErrorMessage(err);
+        if (!isAborted) {
+          const lastEventAt = trackedConversationId
+            ? symbolAnalysisLastRunEventAtMsByConversationIdRef.current.get(trackedConversationId)
+            : undefined;
+          void showGlobalError(
+            'Workstudio 符号分析失败',
+            [
+              `stage=start_symbol_analysis`,
+              `runStage=${runStage}`,
+              `bubbleId=${bubbleId}`,
+              `conversationId=${trackedConversationId ?? ''}`,
+              `workstudioId=${workstudioId ?? ''}`,
+              `filePath=${meta.filePath}`,
+              `symbolKey=${meta.symbolKey}`,
+              `symbol=${meta.symbolName} (${meta.symbolKind})`,
+              `agent=${agentName}`,
+              `modelRef=${modelRef}`,
+              `elapsedMs=${Date.now() - flowStartedAtMs}`,
+              `lastRunEventAtMs=${lastEventAt ?? ''}`,
+              '',
+              message,
+            ].join('\n'),
+            err
+          );
+        }
+        setAiBubbles((prev) => {
+          const next = prev.map((b) =>
+            b.id === bubbleId ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: message } : b
+          );
+          aiBubblesRef.current = next;
+          return next;
+        });
+      } finally {
+        startingSymbolAnalysisBubbleIdsRef.current.delete(bubbleId);
+      }
     },
-	    [
-	      buildSymbolAnalysisOutputContract,
-	      makeSymbolAnalysisCacheKey,
-	      outlineAnalysisActionLabel,
-	      outlineAnalysisPromptPreview,
-	      workstudioId,
+    [
+      buildSymbolAnalysisOutputContract,
+      makeSymbolAnalysisCacheKey,
+      outlineAnalysisActionLabel,
+      outlineAnalysisPromptPreview,
+      workstudioId,
       ws?.mainFolder,
     ]
   );
@@ -7068,13 +7075,13 @@ type OpenFromLinkErrorInfo = {
         const next = prev.map((b) =>
           b.id === bubbleId
             ? {
-                ...b,
-                status: 'connecting' as WorkstudioAiBubbleStatus,
-                startedAtMs: Date.now(),
-                agentName,
-                modelRef: modelRef || b.modelRef,
-                error: undefined,
-              }
+              ...b,
+              status: 'connecting' as WorkstudioAiBubbleStatus,
+              startedAtMs: Date.now(),
+              agentName,
+              modelRef: modelRef || b.modelRef,
+              error: undefined,
+            }
             : b
         );
         aiBubblesRef.current = next;
@@ -7180,11 +7187,11 @@ type OpenFromLinkErrorInfo = {
           const next = prev.map((b) =>
             b.id === bubbleId
               ? {
-                  ...b,
-                  conversationId: conversation.id,
-                  agentName,
-                  modelRef: modelRef || b.modelRef,
-                }
+                ...b,
+                conversationId: conversation.id,
+                agentName,
+                modelRef: modelRef || b.modelRef,
+              }
               : b
           );
           aiBubblesRef.current = next;
@@ -7360,15 +7367,15 @@ type OpenFromLinkErrorInfo = {
                 const next = prev.map((b) =>
                   b.id === bubbleId
                     ? {
-                        ...b,
-                        conversationId: conversation.id,
-                        status: 'done' as WorkstudioAiBubbleStatus,
-                        assistantMessageId: lastAssistant.id,
-                        blocks: blocks.length > 0 ? blocks : b.blocks,
-                        turns: lastAssistant.turns ?? b.turns,
-                        modelRef: b.modelRef || lastAssistant.meta?.model || undefined,
-                        latencyMs: b.latencyMs ?? latencyMs,
-                      }
+                      ...b,
+                      conversationId: conversation.id,
+                      status: 'done' as WorkstudioAiBubbleStatus,
+                      assistantMessageId: lastAssistant.id,
+                      blocks: blocks.length > 0 ? blocks : b.blocks,
+                      turns: lastAssistant.turns ?? b.turns,
+                      modelRef: b.modelRef || lastAssistant.meta?.model || undefined,
+                      latencyMs: b.latencyMs ?? latencyMs,
+                    }
                     : b
                 );
                 aiBubblesRef.current = next;
@@ -7445,7 +7452,7 @@ type OpenFromLinkErrorInfo = {
           folderAnalysisLastRunEventAtMsByConversationIdRef.current.delete(trackedConversationId);
         }
         if (trackedConversationId) {
-          void invoke('abort_run', { conversationId: trackedConversationId }).catch(() => {});
+          void invoke('abort_run', { conversationId: trackedConversationId }).catch(() => { });
         }
         activeFolderAnalysisKeysRef.current.delete(analysisKey);
         folderAnalysisConversationIdByBubbleIdRef.current.delete(bubbleId);
@@ -7703,16 +7710,16 @@ type OpenFromLinkErrorInfo = {
         code = `${code.slice(0, maxChars)}\n…（已截断）`;
       }
 
-	      const symbolKind = normalizeOutlineKind(item.kind);
-	      const actionLabel = outlineAnalysisActionLabel(symbolKind);
-	      const promptPreview = outlineAnalysisPromptPreview(symbolKind);
-	      const symbolSource =
-	        outlineSourceRef.current === 'lsp' ? 'lsp' : outlineSourceRef.current === 'ast' ? 'ast_cst' : undefined;
-	      const id = crypto.randomUUID();
-	      const createdAt = new Date().toISOString();
-	      const displayName = `${actionLabel}：${item.name}`;
-	      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
-	      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
+      const symbolKind = normalizeOutlineKind(item.kind);
+      const actionLabel = outlineAnalysisActionLabel(symbolKind);
+      const promptPreview = outlineAnalysisPromptPreview(symbolKind);
+      const symbolSource =
+        outlineSourceRef.current === 'lsp' ? 'lsp' : outlineSourceRef.current === 'ast' ? 'ast_cst' : undefined;
+      const id = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+      const displayName = `${actionLabel}：${item.name}`;
+      const name = displayName.length > 32 ? `${displayName.slice(0, 32)}…` : displayName;
+      const subtitle = `${basename(filePath)}:${item.selectionLine}:${item.selectionColumn}`;
 
       const bubble: WorkstudioAiBubble = {
         id,
@@ -7722,16 +7729,16 @@ type OpenFromLinkErrorInfo = {
         prompt: promptPreview,
         status: 'queued',
         createdAt,
-	        analysisMeta: {
-	          workstudioId,
-	          languageId,
-	          filePath,
-	          symbolSource,
-	          symbolKey: item.key,
-	          symbolName: item.name,
-	          symbolKind,
-	          selectionLine: item.selectionLine,
-	          selectionColumn: item.selectionColumn,
+        analysisMeta: {
+          workstudioId,
+          languageId,
+          filePath,
+          symbolSource,
+          symbolKey: item.key,
+          symbolName: item.name,
+          symbolKind,
+          selectionLine: item.selectionLine,
+          selectionColumn: item.selectionColumn,
           range: item.range,
         },
         analysisCode: code,
@@ -7880,29 +7887,29 @@ type OpenFromLinkErrorInfo = {
     [ws?.mainFolder]
   );
 
-	  const buildWorkstudioSymbolAnalysisRichTextDoc = useCallback(
-	    (
-		      analysis: Pick<
-		        WorkstudioSymbolAnalysis,
-		        | 'id'
-		        | 'filePath'
-		        | 'selectionLine'
-		        | 'selectionColumn'
-		        | 'symbolName'
-		        | 'languageId'
-		        | 'symbolSource'
-		        | 'symbolKind'
-		        | 'modelRef'
-		        | 'latencyMs'
-		        | 'healthLevel'
-		        | 'verdict'
-	        | 'confidence'
-	        | 'diagnosisSummary'
-	        | 'diagnosisCounts'
-	        | 'updatedAt'
-	        | 'answerMd'
-	      >
-	    ): string => {
+  const buildWorkstudioSymbolAnalysisRichTextDoc = useCallback(
+    (
+      analysis: Pick<
+        WorkstudioSymbolAnalysis,
+        | 'id'
+        | 'filePath'
+        | 'selectionLine'
+        | 'selectionColumn'
+        | 'symbolName'
+        | 'languageId'
+        | 'symbolSource'
+        | 'symbolKind'
+        | 'modelRef'
+        | 'latencyMs'
+        | 'healthLevel'
+        | 'verdict'
+        | 'confidence'
+        | 'diagnosisSummary'
+        | 'diagnosisCounts'
+        | 'updatedAt'
+        | 'answerMd'
+      >
+    ): string => {
       const generatedAt = new Date().toISOString();
       const relPath = toWorkstudioRelativePath(analysis.filePath);
       const fileRef = `${relPath}#L${analysis.selectionLine}C${analysis.selectionColumn}`;
@@ -7914,33 +7921,33 @@ type OpenFromLinkErrorInfo = {
       lines.push('');
       lines.push(`# 符号分析：${analysis.symbolName}`);
       lines.push('');
-	      lines.push(`- 生成时间：\`${generatedAt}\``);
-	      lines.push(`- 位置：\`${fileRef}\``);
-		      lines.push(`- 语言：\`${analysis.languageId}\``);
-		      if (analysis.symbolSource) {
-		        lines.push(`- 符号来源：\`${symbolSourceToLabel(analysis.symbolSource)}\``);
-		      }
-		      lines.push(`- 类型：\`${analysis.symbolKind}\``);
-		      if (typeof analysis.healthLevel === 'number') {
-		        const v = clampHealthLevel(analysis.healthLevel);
-		        if (v) lines.push(`- AI 健康度：\`H${v}/10\``);
-		      }
-	      if (analysis.verdict) {
-	        const label = verdictToLabel(analysis.verdict);
-	        lines.push(`- 诊断结论：\`${label || analysis.verdict}\``);
-	      }
-	      if (typeof analysis.confidence === 'number') {
-	        lines.push(`- 置信度：\`${Math.max(0, Math.min(1, analysis.confidence)).toFixed(2)}\``);
-	      }
-	      if (analysis.diagnosisCounts) {
-	        lines.push(
-	          `- 计数：\`Errors ${analysis.diagnosisCounts.errors} · Defects ${analysis.diagnosisCounts.defects} · Improvements ${analysis.diagnosisCounts.improvements}\``
-	        );
-	      }
-	      if (analysis.diagnosisSummary) lines.push(`- 摘要：${analysis.diagnosisSummary}`);
-	      if (analysis.modelRef) lines.push(`- 模型：\`${analysis.modelRef}\``);
-	      if (typeof analysis.latencyMs === 'number') lines.push(`- 延迟：\`${analysis.latencyMs}ms\``);
-	      lines.push(`- 更新时间：\`${analysis.updatedAt}\``);
+      lines.push(`- 生成时间：\`${generatedAt}\``);
+      lines.push(`- 位置：\`${fileRef}\``);
+      lines.push(`- 语言：\`${analysis.languageId}\``);
+      if (analysis.symbolSource) {
+        lines.push(`- 符号来源：\`${symbolSourceToLabel(analysis.symbolSource)}\``);
+      }
+      lines.push(`- 类型：\`${analysis.symbolKind}\``);
+      if (typeof analysis.healthLevel === 'number') {
+        const v = clampHealthLevel(analysis.healthLevel);
+        if (v) lines.push(`- AI 健康度：\`H${v}/10\``);
+      }
+      if (analysis.verdict) {
+        const label = verdictToLabel(analysis.verdict);
+        lines.push(`- 诊断结论：\`${label || analysis.verdict}\``);
+      }
+      if (typeof analysis.confidence === 'number') {
+        lines.push(`- 置信度：\`${Math.max(0, Math.min(1, analysis.confidence)).toFixed(2)}\``);
+      }
+      if (analysis.diagnosisCounts) {
+        lines.push(
+          `- 计数：\`Errors ${analysis.diagnosisCounts.errors} · Defects ${analysis.diagnosisCounts.defects} · Improvements ${analysis.diagnosisCounts.improvements}\``
+        );
+      }
+      if (analysis.diagnosisSummary) lines.push(`- 摘要：${analysis.diagnosisSummary}`);
+      if (analysis.modelRef) lines.push(`- 模型：\`${analysis.modelRef}\``);
+      if (typeof analysis.latencyMs === 'number') lines.push(`- 延迟：\`${analysis.latencyMs}ms\``);
+      lines.push(`- 更新时间：\`${analysis.updatedAt}\``);
       lines.push('');
       lines.push('---');
       lines.push('');
@@ -8099,10 +8106,10 @@ type OpenFromLinkErrorInfo = {
         setChatWithHistoryViewer((prev) =>
           prev
             ? {
-                ...prev,
-                loading: false,
-                error: message || '读取 Chat with 线程失败',
-              }
+              ...prev,
+              loading: false,
+              error: message || '读取 Chat with 线程失败',
+            }
             : prev
         );
         showNavToast(message || '读取 Chat with 线程失败');
@@ -8132,7 +8139,7 @@ type OpenFromLinkErrorInfo = {
         if (bubbleForThread?.sessionId) {
           const session = useSessionStore.getState().getSession(bubbleForThread.sessionId) ?? null;
           if (session?.detached) {
-            await closeSession(bubbleForThread.sessionId).catch(() => {});
+            await closeSession(bubbleForThread.sessionId).catch(() => { });
           }
         }
         setChatWithBubbles((prev) => prev.filter((bubble) => bubble.threadId !== id));
@@ -8191,29 +8198,29 @@ type OpenFromLinkErrorInfo = {
     ]
   );
 
-		  const deleteOutlineSymbolAnalysis = useCallback(
-		    async (filePath: string, item: OutlineItem) => {
-		      if (!workstudioId) return;
-		      const ok = await Promise.resolve(
-		        window.confirm(`确定删除该符号的分析结果吗？\n\n${basename(filePath)} · ${item.name}`)
-		      );
-		      if (!ok) return;
+  const deleteOutlineSymbolAnalysis = useCallback(
+    async (filePath: string, item: OutlineItem) => {
+      if (!workstudioId) return;
+      const ok = await Promise.resolve(
+        window.confirm(`确定删除该符号的分析结果吗？\n\n${basename(filePath)} · ${item.name}`)
+      );
+      if (!ok) return;
 
-		      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
-		      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-		      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
-		      setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
-		      setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
-		      setOutlineMenu((prev) => {
-		        if (!prev) return prev;
-		        if (prev.filePath !== filePath) return prev;
-		        if (prev.item.key !== item.key) return prev;
-		        return { ...prev, analysis: null, analysisExists: false };
-	      });
-	      showNavToast('已删除分析结果');
-	    },
-	    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
-	  );
+      await deleteWorkstudioSymbolAnalysis({ workstudioId, filePath, symbolKey: item.key });
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+      setSymbolAnalysisCache((prev) => ({ ...prev, [cacheKey]: null }));
+      setSymbolAnalysisExistsCache((prev) => ({ ...prev, [cacheKey]: false }));
+      setSymbolAnalysisSummaryCache((prev) => ({ ...prev, [cacheKey]: null }));
+      setOutlineMenu((prev) => {
+        if (!prev) return prev;
+        if (prev.filePath !== filePath) return prev;
+        if (prev.item.key !== item.key) return prev;
+        return { ...prev, analysis: null, analysisExists: false };
+      });
+      showNavToast('已删除分析结果');
+    },
+    [deleteWorkstudioSymbolAnalysis, makeSymbolAnalysisCacheKey, showNavToast, workstudioId]
+  );
 
   const viewExplorerFolderAnalysis = useCallback(
     async (folderPath: string) => {
@@ -8254,97 +8261,97 @@ type OpenFromLinkErrorInfo = {
     [deleteWorkstudioFolderAnalysis, makeFolderAnalysisCacheKey, showNavToast, workstudioId]
   );
 
-	  const openOutlineItemMenu = useCallback(
-	    (e: React.MouseEvent, item: OutlineItem) => {
-	      e.preventDefault();
-	      e.stopPropagation();
-	      const filePath = activeTextFileInFocusedPane?.path ?? '';
-	      if (!filePath) return;
-	      const languageId = languageForPath(filePath);
+  const openOutlineItemMenu = useCallback(
+    (e: React.MouseEvent, item: OutlineItem) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const filePath = activeTextFileInFocusedPane?.path ?? '';
+      if (!filePath) return;
+      const languageId = languageForPath(filePath);
 
-	      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
-	      const cache = symbolAnalysisCacheRef.current;
-	      const analysis = Object.prototype.hasOwnProperty.call(cache, cacheKey) ? cache[cacheKey] : undefined;
-	      const existsCache = symbolAnalysisExistsCacheRef.current;
-	      const analysisExists = Object.prototype.hasOwnProperty.call(existsCache, cacheKey)
-	        ? Boolean(existsCache[cacheKey])
-	        : analysis
-	          ? true
-	          : analysis === null
-	            ? false
-	            : undefined;
+      const cacheKey = makeSymbolAnalysisCacheKey(filePath, item.key);
+      const cache = symbolAnalysisCacheRef.current;
+      const analysis = Object.prototype.hasOwnProperty.call(cache, cacheKey) ? cache[cacheKey] : undefined;
+      const existsCache = symbolAnalysisExistsCacheRef.current;
+      const analysisExists = Object.prototype.hasOwnProperty.call(existsCache, cacheKey)
+        ? Boolean(existsCache[cacheKey])
+        : analysis
+          ? true
+          : analysis === null
+            ? false
+            : undefined;
 
-	      setOutlineMenu({
-	        visible: true,
-	        anchorX: e.clientX,
-	        anchorY: e.clientY,
-	        x: e.clientX,
-	        y: e.clientY,
-	        filePath,
-	        languageId,
-	        item,
-	        analysis,
-	        analysisExists,
-	      });
+      setOutlineMenu({
+        visible: true,
+        anchorX: e.clientX,
+        anchorY: e.clientY,
+        x: e.clientX,
+        y: e.clientY,
+        filePath,
+        languageId,
+        item,
+        analysis,
+        analysisExists,
+      });
 
-	      if (analysisExists === undefined) {
-	        void ensureSymbolAnalysis(filePath, item.key).then((res) => {
-	          setOutlineMenu((prev) => {
-	            if (!prev) return prev;
-	            if (prev.filePath !== filePath) return prev;
-	            if (prev.item.key !== item.key) return prev;
-	            return { ...prev, analysis: res, analysisExists: Boolean(res) };
-	          });
-	        });
-	      }
-	    },
-	    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
-	  );
+      if (analysisExists === undefined) {
+        void ensureSymbolAnalysis(filePath, item.key).then((res) => {
+          setOutlineMenu((prev) => {
+            if (!prev) return prev;
+            if (prev.filePath !== filePath) return prev;
+            if (prev.item.key !== item.key) return prev;
+            return { ...prev, analysis: res, analysisExists: Boolean(res) };
+          });
+        });
+      }
+    },
+    [activeTextFileInFocusedPane?.path, ensureSymbolAnalysis, makeSymbolAnalysisCacheKey]
+  );
 
-			  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
-			    nodes.map((item) => {
-			      const active = outlineActiveKey === item.key;
-			      const filePath = activeTextFileInFocusedPane?.path ?? '';
-			      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
-			      const exists = analysisCacheKey ? symbolAnalysisExistsCache[analysisCacheKey] : undefined;
-			      const summary = analysisCacheKey ? symbolAnalysisSummaryCache[analysisCacheKey] : undefined;
-			      const cachedAnalysis = analysisCacheKey ? symbolAnalysisCache[analysisCacheKey] : undefined;
-			      const hasAnalysis = analysisCacheKey
-			        ? typeof exists === 'boolean'
-			          ? exists
-			          : Boolean(symbolAnalysisCache[analysisCacheKey])
-			        : false;
-			      const analysisSourceRaw = String(summary?.symbolSource ?? cachedAnalysis?.symbolSource ?? '').trim();
-			      const analysisSourceLabel = analysisSourceRaw ? symbolSourceToLabel(analysisSourceRaw) : '';
-			      const analysisUpdatedAtRaw = String(summary?.updatedAt ?? cachedAnalysis?.updatedAt ?? '').trim();
-			      const analysisUpdatedAtLabel = analysisUpdatedAtRaw ? formatRelativeAgeLabel(analysisUpdatedAtRaw) : '';
-			      const analysisUpdatedAtFull = analysisUpdatedAtRaw ? formatIsoDateTimeLocal(analysisUpdatedAtRaw) : '';
-			      const healthLevel = clampHealthLevel(summary?.healthLevel ?? cachedAnalysis?.healthLevel);
-			      const verdictRaw = String((summary?.verdict ?? cachedAnalysis?.verdict ?? '') as string).trim();
-			      const diagnosisSummary = String((summary?.diagnosisSummary ?? cachedAnalysis?.diagnosisSummary ?? '') as string).trim();
-			      const counts = summary?.diagnosisCounts ?? cachedAnalysis?.diagnosisCounts;
-			      const isDark =
-			        typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
-		      const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
-		      const hasChildren = item.children.length > 0;
-		      const searchActive = Boolean(outlineSearchQuery.trim());
-		      const directSearchMatch = searchActive && outlineSearchMatchedKeys.has(item.key);
-		      const collapsed = !searchActive && hasChildren && outlineCollapsedKeys.has(item.key);
-			      const title = (() => {
-			        const base = `${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`;
-			        if (!hasAnalysis) return base;
-			        const parts: string[] = [base];
-			        if (healthLevel) parts.push(`AI 健康度：H${healthLevel}/10`);
-			        if (verdictRaw) parts.push(`结论：${verdictRaw}`);
-			        if (analysisSourceLabel) parts.push(`来源：${analysisSourceLabel}`);
-			        if (analysisUpdatedAtFull) parts.push(`更新时间：${analysisUpdatedAtFull}`);
-			        if (counts) parts.push(`Errors ${counts.errors} · Defects ${counts.defects} · Improvements ${counts.improvements}`);
-			        if (diagnosisSummary) parts.push(diagnosisSummary);
-			        return parts.join('\n');
-			      })();
-		      return (
-	        <React.Fragment key={item.id}>
-	          <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
+  const renderOutlineNodes = (nodes: OutlineItem[], depth = 0): React.ReactNode =>
+    nodes.map((item) => {
+      const active = outlineActiveKey === item.key;
+      const filePath = activeTextFileInFocusedPane?.path ?? '';
+      const analysisCacheKey = filePath ? makeSymbolAnalysisCacheKey(filePath, item.key) : '';
+      const exists = analysisCacheKey ? symbolAnalysisExistsCache[analysisCacheKey] : undefined;
+      const summary = analysisCacheKey ? symbolAnalysisSummaryCache[analysisCacheKey] : undefined;
+      const cachedAnalysis = analysisCacheKey ? symbolAnalysisCache[analysisCacheKey] : undefined;
+      const hasAnalysis = analysisCacheKey
+        ? typeof exists === 'boolean'
+          ? exists
+          : Boolean(symbolAnalysisCache[analysisCacheKey])
+        : false;
+      const analysisSourceRaw = String(summary?.symbolSource ?? cachedAnalysis?.symbolSource ?? '').trim();
+      const analysisSourceLabel = analysisSourceRaw ? symbolSourceToLabel(analysisSourceRaw) : '';
+      const analysisUpdatedAtRaw = String(summary?.updatedAt ?? cachedAnalysis?.updatedAt ?? '').trim();
+      const analysisUpdatedAtLabel = analysisUpdatedAtRaw ? formatRelativeAgeLabel(analysisUpdatedAtRaw) : '';
+      const analysisUpdatedAtFull = analysisUpdatedAtRaw ? formatIsoDateTimeLocal(analysisUpdatedAtRaw) : '';
+      const healthLevel = clampHealthLevel(summary?.healthLevel ?? cachedAnalysis?.healthLevel);
+      const verdictRaw = String((summary?.verdict ?? cachedAnalysis?.verdict ?? '') as string).trim();
+      const diagnosisSummary = String((summary?.diagnosisSummary ?? cachedAnalysis?.diagnosisSummary ?? '') as string).trim();
+      const counts = summary?.diagnosisCounts ?? cachedAnalysis?.diagnosisCounts;
+      const isDark =
+        typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
+      const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
+      const hasChildren = item.children.length > 0;
+      const searchActive = Boolean(outlineSearchQuery.trim());
+      const directSearchMatch = searchActive && outlineSearchMatchedKeys.has(item.key);
+      const collapsed = !searchActive && hasChildren && outlineCollapsedKeys.has(item.key);
+      const title = (() => {
+        const base = `${item.name} · ${item.kind} · ${item.selectionLine}:${item.selectionColumn}`;
+        if (!hasAnalysis) return base;
+        const parts: string[] = [base];
+        if (healthLevel) parts.push(`AI 健康度：H${healthLevel}/10`);
+        if (verdictRaw) parts.push(`结论：${verdictRaw}`);
+        if (analysisSourceLabel) parts.push(`来源：${analysisSourceLabel}`);
+        if (analysisUpdatedAtFull) parts.push(`更新时间：${analysisUpdatedAtFull}`);
+        if (counts) parts.push(`Errors ${counts.errors} · Defects ${counts.defects} · Improvements ${counts.improvements}`);
+        if (diagnosisSummary) parts.push(diagnosisSummary);
+        return parts.join('\n');
+      })();
+      return (
+        <React.Fragment key={item.id}>
+          <div className="flex items-center gap-1" style={{ paddingLeft: 6 + depth * 14 }}>
             {hasChildren ? (
               <button
                 type="button"
@@ -8361,86 +8368,84 @@ type OpenFromLinkErrorInfo = {
             ) : (
               <span className="inline-block h-4 w-4" />
             )}
-		            <button
-		              type="button"
-		              data-outline-key={item.key}
-		              className={[
-		                'flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1 text-left text-xs',
-		                active
-		                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
-		                  : directSearchMatch
-		                    ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-100 dark:hover:bg-amber-900/30'
-		                    : searchActive
-		                      ? 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
-		                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-	              ].join(' ')}
-	              title={title}
-	              onClick={() => jumpToOutlineItem(item)}
-	              onContextMenu={(e) => openOutlineItemMenu(e, item)}
-	            >
-	              <span
-	                className={[
-	                  'min-w-0 flex-1 truncate font-medium',
-	                  hasAnalysis && !healthLevel && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
-	                  searchActive && !directSearchMatch ? 'opacity-80' : '',
-	                ].join(' ')}
-	                style={
-	                  hasAnalysis && healthColor
-	                    ? {
-	                        textDecorationLine: 'underline',
-	                        textDecorationColor: healthColor,
-	                        textDecorationThickness: '2px',
-	                        textUnderlineOffset: '2px',
-	                      }
-	                    : undefined
-	                }
-	                title={
-	                  hasAnalysis
-	                    ? healthLevel
-	                      ? `AI 健康度 H${healthLevel}/10`
-	                      : '已保存分析结果'
-	                    : undefined
-	                }
-	              >
-	                {item.name}
-	              </span>
-		              {hasAnalysis ? (
-		                <>
-		                  <span
-		                    className={[
-		                      'shrink-0 h-2 w-2 rounded-full',
-		                      !healthLevel ? 'bg-emerald-500 dark:bg-emerald-400' : '',
-		                    ].join(' ')}
-		                    style={healthColor ? { backgroundColor: healthColor } : undefined}
-		                    title={
-		                      healthLevel
-		                        ? `AI 健康度 H${healthLevel}/10${verdictRaw ? ` · ${verdictRaw}` : ''}`
-		                        : '已保存分析结果'
-		                    }
-		                  />
-		                  {analysisSourceLabel && (
-		                    <span
-		                      className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300"
-		                      title={`分析来源：${analysisSourceLabel}`}
-		                    >
-		                      {analysisSourceLabel}
-		                    </span>
-		                  )}
-		                  {analysisUpdatedAtLabel && (
-		                    <span
-		                      className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500"
-		                      title={analysisUpdatedAtFull ? `更新时间：${analysisUpdatedAtFull}` : undefined}
-		                    >
-		                      {analysisUpdatedAtLabel}
-		                    </span>
-		                  )}
-		                </>
-		              ) : null}
-		              <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-		                {item.kind}
-		              </span>
-	            </button>
-	          </div>
+            <button
+              type="button"
+              data-outline-key={item.key}
+              className={[
+                'flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1 text-left text-xs',
+                active
+                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200'
+                  : directSearchMatch
+                    ? 'bg-amber-50 text-amber-800 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-100 dark:hover:bg-amber-900/30'
+                    : searchActive
+                      ? 'text-gray-600 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+                      : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+              ].join(' ')}
+              title={title}
+              onClick={() => jumpToOutlineItem(item)}
+              onContextMenu={(e) => openOutlineItemMenu(e, item)}
+            >
+              <SymbolKindIcon kind={item.kind} size={14} className="shrink-0 opacity-90" />
+              <span
+                className={[
+                  'min-w-0 flex-1 truncate font-medium',
+                  hasAnalysis && !healthLevel && !active ? 'text-emerald-700 dark:text-emerald-300' : '',
+                  searchActive && !directSearchMatch ? 'opacity-80' : '',
+                ].join(' ')}
+                style={
+                  hasAnalysis && healthColor
+                    ? {
+                      textDecorationLine: 'underline',
+                      textDecorationColor: healthColor,
+                      textDecorationThickness: '2px',
+                      textUnderlineOffset: '2px',
+                    }
+                    : undefined
+                }
+                title={
+                  hasAnalysis
+                    ? healthLevel
+                      ? `AI 健康度 H${healthLevel}/10`
+                      : '已保存分析结果'
+                    : undefined
+                }
+              >
+                {item.name}
+              </span>
+              {hasAnalysis ? (
+                <>
+                  <span
+                    className={[
+                      'shrink-0 h-2 w-2 rounded-full',
+                      !healthLevel ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+                    ].join(' ')}
+                    style={healthColor ? { backgroundColor: healthColor } : undefined}
+                    title={
+                      healthLevel
+                        ? `AI 健康度 H${healthLevel}/10${verdictRaw ? ` · ${verdictRaw}` : ''}`
+                        : '已保存分析结果'
+                    }
+                  />
+                  {analysisSourceLabel && (
+                    <span
+                      className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300"
+                      title={`分析来源：${analysisSourceLabel}`}
+                    >
+                      {analysisSourceLabel}
+                    </span>
+                  )}
+                  {analysisUpdatedAtLabel && (
+                    <span
+                      className="shrink-0 text-[10px] text-gray-400 dark:text-gray-500"
+                      title={analysisUpdatedAtFull ? `更新时间：${analysisUpdatedAtFull}` : undefined}
+                    >
+                      {analysisUpdatedAtLabel}
+                    </span>
+                  )}
+                </>
+              ) : null}
+            </button>
+          </div>
           {hasChildren && !collapsed ? renderOutlineNodes(item.children, depth + 1) : null}
         </React.Fragment>
       );
@@ -8664,11 +8669,10 @@ type OpenFromLinkErrorInfo = {
                   ? '请先在“设置 -> 代码智能 -> 符号分析”中启用'
                   : outlineItems.length === 0
                     ? 'Outline 为空：没有可解析的符号'
-                    : `批量解析当前文件的全部符号（默认：${
-                        codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
-                          ? '跳过变量/字段'
-                          : '包含变量/字段'
-                      }，点击可修改）`
+                    : `批量解析当前文件的全部符号（默认：${codeIntelligenceConfig?.symbolAnalysis?.bulkExcludeVariables !== false
+                      ? '跳过变量/字段'
+                      : '包含变量/字段'
+                    }，点击可修改）`
               }
             >
               全部解析
@@ -8871,7 +8875,11 @@ type OpenFromLinkErrorInfo = {
   }, [uiStateRestored, filePath, line, column, endLine, endColumn, ws?.mainFolder, openLinkTarget]);
 
   useEffect(() => {
+    // 用 cleanedUp flag 解决 unlisten 异步竞态：
+    // listen() 返回 Promise，若 React cleanup 在 Promise resolve 之前执行，
+    // unlisten 仍为 null 导致旧监听器泄漏；cleanedUp 确保即使 resolve 滞后也能立即退订。
     let unlisten: null | (() => void) = null;
+    let cleanedUp = false;
     void listen('workstudio:open_file', (event) => {
       const payload = (event as any).payload as LinkTarget | null | undefined;
       if (!payload?.filePath) return;
@@ -8933,17 +8941,27 @@ type OpenFromLinkErrorInfo = {
           payload,
           visibility: typeof document !== 'undefined' ? document.visibilityState : null,
         });
-        void openLinkTarget(payload);
+        // 通过 ref 调用最新版本的 openLinkTarget，避免旧闭包捕获过期的 uiStateRestored
+        void openLinkTargetRef.current(payload);
       })();
     })
       .then((fn) => {
-        unlisten = fn;
+        if (cleanedUp) {
+          // cleanup 已先于 Promise resolve 执行，立即退订避免监听器泄漏
+          fn();
+        } else {
+          unlisten = fn;
+        }
       })
       .catch(() => { });
     return () => {
+      cleanedUp = true;
       unlisten?.();
     };
-  }, [dbg, openLinkTarget, workstudioId, ws?.mainFolder]);
+    // openLinkTarget 不加入 deps：通过 openLinkTargetRef 持有最新引用，
+    // 避免 uiStateRestored 变化时监听器重注册，消除双重触发。
+  }, [dbg, workstudioId, ws?.mainFolder]);
+
 
   const closeFileTab = useCallback(
     (fileId: string) => {
@@ -9391,7 +9409,7 @@ type OpenFromLinkErrorInfo = {
                 languageId,
                 priority: CODE_INDEX_PRIORITY_SAVE_FILE,
                 force: true,
-              }).catch(() => {});
+              }).catch(() => { });
             }
           } catch {
             // ignore
@@ -9511,7 +9529,7 @@ type OpenFromLinkErrorInfo = {
               languageId,
               priority: CODE_INDEX_PRIORITY_SAVE_FILE,
               force: true,
-            }).catch(() => {});
+            }).catch(() => { });
           }
         } catch {
           // ignore
@@ -11154,7 +11172,7 @@ type OpenFromLinkErrorInfo = {
     setWorkspaceSymbolPaletteError(null);
     window.setTimeout(() => workspaceSymbolPaletteInputRef.current?.focus(), 0);
     if (ws?.id) {
-      void codeIndexStartWorkspaceScan({ workstudioId: ws.id, priority: CODE_INDEX_PRIORITY_BACKGROUND }).catch(() => {});
+      void codeIndexStartWorkspaceScan({ workstudioId: ws.id, priority: CODE_INDEX_PRIORITY_BACKGROUND }).catch(() => { });
     }
   }, [closeFilePalette, closeFileSymbolPalette, ws?.id]);
 
@@ -11763,9 +11781,9 @@ type OpenFromLinkErrorInfo = {
         outlinePreferLsp !== DEFAULT_OUTLINE_PREFER_LSP ||
         outlineSortMode !== DEFAULT_OUTLINE_SORT_MODE;
       const state: WorkstudioUiState = {
-	        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
-	        panes: resolvedPanes
-	          .map((p) => ({
+        openFiles: Array.from(new Set(persistedOpenFiles.map((f) => f.path))),
+        panes: resolvedPanes
+          .map((p) => ({
             id: p.id,
             tabIds: Array.from(new Set(p.tabIds.filter((id) => !isUntitledPath(id)))),
             activeTabId: p.activeTabId && !isUntitledPath(p.activeTabId) ? p.activeTabId : undefined,
@@ -12560,7 +12578,7 @@ type OpenFromLinkErrorInfo = {
             ) : (
               entries.map((entry) => {
                 if (entry.isDir) {
-                return renderDirNode(entry.path, depth + 1);
+                  return renderDirNode(entry.path, depth + 1);
                 }
                 const normalizedEntryPath = normalizeFsPath(entry.path);
                 const isActive =
@@ -12704,179 +12722,179 @@ type OpenFromLinkErrorInfo = {
               </div>
             );
           })}
-	          {aiBubbles.map((b) => {
-	            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
-	            const isActive = ACTIVE_STATUSES.includes(b.status);
-	            return (
-	              <button
-	                key={b.id}
-	                type="button"
-	                onClick={() => {
-	                  const isTerminalState = b.status === 'done' || b.status === 'error';
-	                  if (b.kind === 'symbol_analysis' && isTerminalState) {
-	                    void (async () => {
-	                      try {
-	                        const meta = b.analysisMeta ?? null;
-	                        if (!meta) {
-	                          throw new Error('缺少符号分析元信息，无法打开结果');
-	                        }
+          {aiBubbles.map((b) => {
+            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
+            const isActive = ACTIVE_STATUSES.includes(b.status);
+            return (
+              <button
+                key={b.id}
+                type="button"
+                onClick={() => {
+                  const isTerminalState = b.status === 'done' || b.status === 'error';
+                  if (b.kind === 'symbol_analysis' && isTerminalState) {
+                    void (async () => {
+                      try {
+                        const meta = b.analysisMeta ?? null;
+                        if (!meta) {
+                          throw new Error('缺少符号分析元信息，无法打开结果');
+                        }
 
-	                        let loaded: WorkstudioSymbolAnalysis | null = null;
-	                        try {
-	                          loaded = await ensureSymbolAnalysis(meta.filePath, meta.symbolKey);
-	                        } catch {
-	                          loaded = null;
-	                        }
+                        let loaded: WorkstudioSymbolAnalysis | null = null;
+                        try {
+                          loaded = await ensureSymbolAnalysis(meta.filePath, meta.symbolKey);
+                        } catch {
+                          loaded = null;
+                        }
 
-	                        const answerFromBlocks = (() => {
-	                          const blocks = b.blocks ?? [];
-	                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
-	                          if (textBlocks.length === 0) return null;
-	                          const finalBlock =
-	                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
-	                            textBlocks[textBlocks.length - 1] ??
-	                            null;
-	                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
-	                        })();
+                        const answerFromBlocks = (() => {
+                          const blocks = b.blocks ?? [];
+                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
+                          if (textBlocks.length === 0) return null;
+                          const finalBlock =
+                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
+                            textBlocks[textBlocks.length - 1] ??
+                            null;
+                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
+                        })();
 
-	                        const answerMd =
-	                          loaded?.answerMd ??
-	                          answerFromBlocks ??
-	                          (b.status === 'error'
-	                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
-	                            : '');
+                        const answerMd =
+                          loaded?.answerMd ??
+                          answerFromBlocks ??
+                          (b.status === 'error'
+                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
+                            : '');
 
-	                        if (!answerMd.trim()) {
-	                          showNavToast('暂无可打开的分析内容');
-	                          openAiViewer(b.id);
-	                          return;
-	                        }
+                        if (!answerMd.trim()) {
+                          showNavToast('暂无可打开的分析内容');
+                          openAiViewer(b.id);
+                          return;
+                        }
 
-		                        const docInput: Pick<
-		                          WorkstudioSymbolAnalysis,
-		                          | 'id'
-		                          | 'filePath'
-		                          | 'selectionLine'
-		                          | 'selectionColumn'
-		                          | 'symbolName'
-		                          | 'languageId'
-		                          | 'symbolSource'
-		                          | 'symbolKind'
-		                          | 'modelRef'
-		                          | 'latencyMs'
-		                          | 'updatedAt'
-		                          | 'answerMd'
-	                        > = loaded ?? {
-	                          id: crypto.randomUUID(),
-		                          filePath: meta.filePath,
-		                          languageId: meta.languageId,
-		                          symbolSource: meta.symbolSource,
-		                          symbolName: meta.symbolName,
-		                          symbolKind: meta.symbolKind,
-		                          selectionLine: meta.selectionLine,
-		                          selectionColumn: meta.selectionColumn,
-	                          answerMd,
-	                          modelRef: b.modelRef,
-	                          latencyMs: b.latencyMs,
-	                          updatedAt: new Date().toISOString(),
-	                        };
+                        const docInput: Pick<
+                          WorkstudioSymbolAnalysis,
+                          | 'id'
+                          | 'filePath'
+                          | 'selectionLine'
+                          | 'selectionColumn'
+                          | 'symbolName'
+                          | 'languageId'
+                          | 'symbolSource'
+                          | 'symbolKind'
+                          | 'modelRef'
+                          | 'latencyMs'
+                          | 'updatedAt'
+                          | 'answerMd'
+                        > = loaded ?? {
+                          id: crypto.randomUUID(),
+                          filePath: meta.filePath,
+                          languageId: meta.languageId,
+                          symbolSource: meta.symbolSource,
+                          symbolName: meta.symbolName,
+                          symbolKind: meta.symbolKind,
+                          selectionLine: meta.selectionLine,
+                          selectionColumn: meta.selectionColumn,
+                          answerMd,
+                          modelRef: b.modelRef,
+                          latencyMs: b.latencyMs,
+                          updatedAt: new Date().toISOString(),
+                        };
 
-	                        const content = buildWorkstudioSymbolAnalysisRichTextDoc(docInput);
-	                        openVirtualRichTextFile(`分析：${meta.symbolName}`, content);
+                        const content = buildWorkstudioSymbolAnalysisRichTextDoc(docInput);
+                        openVirtualRichTextFile(`分析：${meta.symbolName}`, content);
 
-	                        // 打开后移除气泡，避免堆积（分析结果可随时通过 Outline -> 查看分析 再次打开）
-	                        if (aiViewerId === b.id) setAiViewerId(null);
-	                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
-	                      } catch (err) {
-	                        const message = err instanceof Error ? err.message : String(err);
-	                        showNavToast(message);
-	                        openAiViewer(b.id);
-	                      }
-	                    })();
-	                    return;
-	                  }
+                        // 打开后移除气泡，避免堆积（分析结果可随时通过 Outline -> 查看分析 再次打开）
+                        if (aiViewerId === b.id) setAiViewerId(null);
+                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
+                      } catch (err) {
+                        const message = err instanceof Error ? err.message : String(err);
+                        showNavToast(message);
+                        openAiViewer(b.id);
+                      }
+                    })();
+                    return;
+                  }
 
-	                  if (b.kind === 'folder_analysis' && isTerminalState) {
-	                    void (async () => {
-	                      try {
-	                        const meta = b.folderAnalysisMeta ?? null;
-	                        if (!meta) {
-	                          throw new Error('缺少文件夹分析元信息，无法打开结果');
-	                        }
+                  if (b.kind === 'folder_analysis' && isTerminalState) {
+                    void (async () => {
+                      try {
+                        const meta = b.folderAnalysisMeta ?? null;
+                        if (!meta) {
+                          throw new Error('缺少文件夹分析元信息，无法打开结果');
+                        }
 
-	                        let loaded: WorkstudioFolderAnalysis | null = null;
-	                        try {
-	                          loaded = await ensureFolderAnalysis(meta.folderPath);
-	                        } catch {
-	                          loaded = null;
-	                        }
+                        let loaded: WorkstudioFolderAnalysis | null = null;
+                        try {
+                          loaded = await ensureFolderAnalysis(meta.folderPath);
+                        } catch {
+                          loaded = null;
+                        }
 
-	                        const answerFromBlocks = (() => {
-	                          const blocks = b.blocks ?? [];
-	                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
-	                          if (textBlocks.length === 0) return null;
-	                          const finalBlock =
-	                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
-	                            textBlocks[textBlocks.length - 1] ??
-	                            null;
-	                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
-	                        })();
+                        const answerFromBlocks = (() => {
+                          const blocks = b.blocks ?? [];
+                          const textBlocks = blocks.filter((blk) => blk.type === 'text');
+                          if (textBlocks.length === 0) return null;
+                          const finalBlock =
+                            textBlocks.find((blk) => String(blk.id ?? '').endsWith(':assistant_text:final')) ??
+                            textBlocks[textBlocks.length - 1] ??
+                            null;
+                          return typeof finalBlock?.text === 'string' ? finalBlock.text : null;
+                        })();
 
-	                        const answerMd =
-	                          loaded?.answerMd ??
-	                          answerFromBlocks ??
-	                          (b.status === 'error'
-	                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
-	                            : '');
+                        const answerMd =
+                          loaded?.answerMd ??
+                          answerFromBlocks ??
+                          (b.status === 'error'
+                            ? `**错误**\n\n\`\`\`text\n${b.error || '未知错误'}\n\`\`\`\n`
+                            : '');
 
-	                        if (!answerMd.trim()) {
-	                          showNavToast('暂无可打开的分析内容');
-	                          openAiViewer(b.id);
-	                          return;
-	                        }
+                        if (!answerMd.trim()) {
+                          showNavToast('暂无可打开的分析内容');
+                          openAiViewer(b.id);
+                          return;
+                        }
 
-	                        const docInput: Pick<
-	                          WorkstudioFolderAnalysis,
-	                          | 'id'
-	                          | 'folderPath'
-	                          | 'modelRef'
-	                          | 'latencyMs'
-	                          | 'healthLevel'
-	                          | 'verdict'
-	                          | 'confidence'
-	                          | 'diagnosisSummary'
-	                          | 'diagnosisCounts'
-	                          | 'updatedAt'
-	                          | 'answerMd'
-	                        > = loaded ?? {
-	                          id: crypto.randomUUID(),
-	                          folderPath: meta.folderPath,
-	                          answerMd,
-	                          modelRef: b.modelRef,
-	                          latencyMs: b.latencyMs,
-	                          updatedAt: new Date().toISOString(),
-	                        };
+                        const docInput: Pick<
+                          WorkstudioFolderAnalysis,
+                          | 'id'
+                          | 'folderPath'
+                          | 'modelRef'
+                          | 'latencyMs'
+                          | 'healthLevel'
+                          | 'verdict'
+                          | 'confidence'
+                          | 'diagnosisSummary'
+                          | 'diagnosisCounts'
+                          | 'updatedAt'
+                          | 'answerMd'
+                        > = loaded ?? {
+                          id: crypto.randomUUID(),
+                          folderPath: meta.folderPath,
+                          answerMd,
+                          modelRef: b.modelRef,
+                          latencyMs: b.latencyMs,
+                          updatedAt: new Date().toISOString(),
+                        };
 
-	                        const content = buildWorkstudioFolderAnalysisRichTextDoc(docInput);
-	                        openVirtualRichTextFile(`文件夹分析：${basename(meta.folderPath)}`, content);
+                        const content = buildWorkstudioFolderAnalysisRichTextDoc(docInput);
+                        openVirtualRichTextFile(`文件夹分析：${basename(meta.folderPath)}`, content);
 
-	                        if (aiViewerId === b.id) setAiViewerId(null);
-	                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
-	                      } catch (err) {
-	                        const message = err instanceof Error ? err.message : String(err);
-	                        showNavToast(message);
-	                        openAiViewer(b.id);
-	                      }
-	                    })();
-	                    return;
-	                  }
+                        if (aiViewerId === b.id) setAiViewerId(null);
+                        setAiBubbles((prev) => prev.filter((x) => x.id !== b.id));
+                      } catch (err) {
+                        const message = err instanceof Error ? err.message : String(err);
+                        showNavToast(message);
+                        openAiViewer(b.id);
+                      }
+                    })();
+                    return;
+                  }
 
-	                  openAiViewer(b.id);
-	                }}
-	                className={[
-	                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
-	                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
-	                  'border-gray-200 dark:border-gray-800',
+                  openAiViewer(b.id);
+                }}
+                className={[
+                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 text-left shadow-sm',
+                  'bg-white/95 hover:bg-white disabled:opacity-70 dark:bg-gray-950/90 dark:hover:bg-gray-950',
+                  'border-gray-200 dark:border-gray-800',
                   'cursor-pointer',
                 ].join(' ')}
                 title={b.subtitle}
@@ -12890,17 +12908,17 @@ type OpenFromLinkErrorInfo = {
                   <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">
                     {b.name}
                   </div>
-	                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
-	                    {describeWorkstudioAiBubbleStatus(b.status)}
-	                  </div>
-	                </div>
-	                {b.kind === 'symbol_analysis' ? (
-	                  <ListTree size={14} className="shrink-0 opacity-60" />
-	                ) : b.kind === 'folder_analysis' ? (
-	                  <Folder size={14} className="shrink-0 opacity-60" />
-	                ) : (
-	                  <MessageSquare size={14} className="shrink-0 opacity-60" />
-	                )}
+                  <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">
+                    {describeWorkstudioAiBubbleStatus(b.status)}
+                  </div>
+                </div>
+                {b.kind === 'symbol_analysis' ? (
+                  <ListTree size={14} className="shrink-0 opacity-60" />
+                ) : b.kind === 'folder_analysis' ? (
+                  <Folder size={14} className="shrink-0 opacity-60" />
+                ) : (
+                  <MessageSquare size={14} className="shrink-0 opacity-60" />
+                )}
               </button>
             );
           })}
@@ -13138,7 +13156,7 @@ type OpenFromLinkErrorInfo = {
                                 {rec.modelRef}
                               </span>
                             )}
-                            
+
                           </div>
                         </div>
                         <div className="flex shrink-0 items-center gap-2">
@@ -13220,15 +13238,15 @@ type OpenFromLinkErrorInfo = {
       )}
 
       {aiViewer && (
-	        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
-	          <div
-	            className="flex h-[calc(100vh-2rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950"
-	          >
-	            {/* Header */}
-	            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
-	              <div className="min-w-0">
-	                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
-	                  {aiViewer.name}
+        <div className="fixed inset-0 z-[230] flex items-center justify-center bg-black/35 p-4">
+          <div
+            className="flex h-[calc(100vh-2rem)] w-full max-w-7xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950"
+          >
+            {/* Header */}
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {aiViewer.name}
                 </div>
                 <div className="mt-0.5 flex items-center gap-2 truncate text-[11px] text-gray-500 dark:text-gray-400">
                   <span>{aiViewer.subtitle}</span>
@@ -13245,83 +13263,83 @@ type OpenFromLinkErrorInfo = {
                       if (!isTauri()) return;
                       const bubbleId = aiViewer.id;
 
-	                      if (aiViewer.kind === 'symbol_analysis') {
-	                        // 符号分析使用 run_task/run:event：优先用 conversationId 走 abort_run。
-	                        // 注意：queued/connecting 阶段可能还在 startQueuedSymbolAnalysis 里，这里用一个 cancel 标记让启动流程尽快退出。
-	                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
-	                          cancelledSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
-	                        }
+                      if (aiViewer.kind === 'symbol_analysis') {
+                        // 符号分析使用 run_task/run:event：优先用 conversationId 走 abort_run。
+                        // 注意：queued/connecting 阶段可能还在 startQueuedSymbolAnalysis 里，这里用一个 cancel 标记让启动流程尽快退出。
+                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
+                          cancelledSymbolAnalysisBubbleIdsRef.current.add(bubbleId);
+                        }
 
-	                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
-	                        const convIdFromMap = String(
-	                          symbolAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
-	                        ).trim();
-	                        const convId = convIdDirect || convIdFromMap;
+                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
+                        const convIdFromMap = String(
+                          symbolAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
+                        ).trim();
+                        const convId = convIdDirect || convIdFromMap;
 
-	                        if (convId) {
-	                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
-	                        }
+                        if (convId) {
+                          void invoke('abort_run', { conversationId: convId }).catch(() => { });
+                        }
 
-	                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
-	                        // 立即本地清理“该符号正在分析中/队列中”的锁与 UI 状态：
-	                        // - 不能依赖 run:event 的 done/error（取消时可能丢事件或被过滤），否则会出现“取消后无法再次分析”的卡死。
-	                        if (bubble?.analysisMeta) {
-	                          const analysisKey = makeSymbolAnalysisCacheKey(
-	                            bubble.analysisMeta.filePath,
-	                            bubble.analysisMeta.symbolKey
-	                          );
-	                          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
-	                        }
+                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+                        // 立即本地清理“该符号正在分析中/队列中”的锁与 UI 状态：
+                        // - 不能依赖 run:event 的 done/error（取消时可能丢事件或被过滤），否则会出现“取消后无法再次分析”的卡死。
+                        if (bubble?.analysisMeta) {
+                          const analysisKey = makeSymbolAnalysisCacheKey(
+                            bubble.analysisMeta.filePath,
+                            bubble.analysisMeta.symbolKey
+                          );
+                          activeSymbolAnalysisKeysRef.current.delete(analysisKey);
+                        }
 
-	                        setAiBubbles((prev) => {
-		                          const next = prev.map((b) =>
-		                            b.id === bubbleId
-		                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
-	                              : b
-	                          );
-	                          aiBubblesRef.current = next;
-	                          return next;
-	                        });
-	                        scheduleSymbolAnalysisRunsRef.current?.();
-	                        return;
-	                      }
-	                      if (aiViewer.kind === 'folder_analysis') {
-	                        // 文件夹分析同样走 run_task/run:event：优先用 conversationId 走 abort_run。
-	                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
-	                          cancelledFolderAnalysisBubbleIdsRef.current.add(bubbleId);
-	                        }
+                        setAiBubbles((prev) => {
+                          const next = prev.map((b) =>
+                            b.id === bubbleId
+                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
+                              : b
+                          );
+                          aiBubblesRef.current = next;
+                          return next;
+                        });
+                        scheduleSymbolAnalysisRunsRef.current?.();
+                        return;
+                      }
+                      if (aiViewer.kind === 'folder_analysis') {
+                        // 文件夹分析同样走 run_task/run:event：优先用 conversationId 走 abort_run。
+                        if (aiViewer.status === 'queued' || aiViewer.status === 'connecting') {
+                          cancelledFolderAnalysisBubbleIdsRef.current.add(bubbleId);
+                        }
 
-	                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
-	                        const convIdFromMap = String(
-	                          folderAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
-	                        ).trim();
-	                        const convId = convIdDirect || convIdFromMap;
+                        const convIdDirect = (aiViewer.conversationId ?? '').trim();
+                        const convIdFromMap = String(
+                          folderAnalysisConversationIdByBubbleIdRef.current.get(bubbleId) ?? ''
+                        ).trim();
+                        const convId = convIdDirect || convIdFromMap;
 
-	                        if (convId) {
-	                          void invoke('abort_run', { conversationId: convId }).catch(() => {});
-	                        }
+                        if (convId) {
+                          void invoke('abort_run', { conversationId: convId }).catch(() => { });
+                        }
 
-	                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
-	                        if (bubble?.folderAnalysisMeta) {
-	                          const analysisKey = makeFolderAnalysisCacheKey(bubble.folderAnalysisMeta.folderPath);
-	                          activeFolderAnalysisKeysRef.current.delete(analysisKey);
-	                        }
+                        const bubble = aiBubblesRef.current.find((b) => b.id === bubbleId) ?? null;
+                        if (bubble?.folderAnalysisMeta) {
+                          const analysisKey = makeFolderAnalysisCacheKey(bubble.folderAnalysisMeta.folderPath);
+                          activeFolderAnalysisKeysRef.current.delete(analysisKey);
+                        }
 
-	                        setAiBubbles((prev) => {
-	                          const next = prev.map((b) =>
-	                            b.id === bubbleId
-	                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
-	                              : b
-	                          );
-	                          aiBubblesRef.current = next;
-	                          return next;
-	                        });
-	                        scheduleFolderAnalysisRunsRef.current?.();
-	                        return;
-	                      }
+                        setAiBubbles((prev) => {
+                          const next = prev.map((b) =>
+                            b.id === bubbleId
+                              ? { ...b, status: 'error' as WorkstudioAiBubbleStatus, error: '已中止' }
+                              : b
+                          );
+                          aiBubblesRef.current = next;
+                          return next;
+                        });
+                        scheduleFolderAnalysisRunsRef.current?.();
+                        return;
+                      }
 
                       const convId = (aiViewer.conversationId ?? '').trim();
-                      if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => {});
+                      if (convId) void invoke('abort_run', { conversationId: convId }).catch(() => { });
                     }}
                   >
                     中止
@@ -13350,162 +13368,162 @@ type OpenFromLinkErrorInfo = {
                 </div>
               </details>
 
-	                  {/* run_task bubbles：复用 ChatView 的 blocks 渲染（含工具/审批/多 turn） */}
-	              {aiViewer.conversationId ? (
-	                <div>
-	                  <div className="mb-1 flex items-center justify-between gap-3">
-	                    <div className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-	                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
-	                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
-	                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
-	                          <Loader2 size={10} className="animate-spin" />
-	                          {describeWorkstudioAiBubbleStatus(aiViewer.status)}
-	                        </span>
-	                      )}
-	                    </div>
-	                    <div className="flex shrink-0 items-center gap-1">
-	                      <button
-	                        type="button"
-	                        className={[
-	                          'rounded-md px-2 py-1 text-[11px] font-semibold border',
-	                          aiViewerMode === 'result'
-	                            ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
-	                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40',
-	                        ].join(' ')}
-	                        onClick={() => setAiViewerMode('result')}
-	                      >
-	                        最终结果
-	                      </button>
-	                      <button
-	                        type="button"
-	                        className={[
-	                          'rounded-md px-2 py-1 text-[11px] font-semibold border',
-	                          aiViewerMode === 'details'
-	                            ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
-	                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40',
-	                        ].join(' ')}
-	                        onClick={() => setAiViewerMode('details')}
-	                      >
-	                        过程详情
-	                      </button>
-	                      {(() => {
-	                        const turns = aiViewer.turns ?? [];
-	                        const hasInlineDebug = turns.some((t) => Boolean(t.debugInfo));
-	                        const hasPersistedDebug = turns.some((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo));
-	                        const canOpenDebug =
-	                          hasPersistedDebug &&
-	                          (hasInlineDebug ||
-	                            (Boolean((aiViewer.conversationId ?? '').trim()) &&
-	                              Boolean((aiViewer.assistantMessageId ?? '').trim())));
-	                        const debugTitle = !hasPersistedDebug
-	                          ? '该任务暂无调试数据（需要开启调试模式）'
-	                          : hasInlineDebug
-	                            ? '查看请求/响应（已在内存中）'
-	                            : !aiViewer.assistantMessageId
-	                              ? '调试数据已存在，但 assistantMessageId 尚未就绪'
-	                              : '点击加载该轮请求/响应';
+              {/* run_task bubbles：复用 ChatView 的 blocks 渲染（含工具/审批/多 turn） */}
+              {aiViewer.conversationId ? (
+                <div>
+                  <div className="mb-1 flex items-center justify-between gap-3">
+                    <div className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
+                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
+                          <Loader2 size={10} className="animate-spin" />
+                          {describeWorkstudioAiBubbleStatus(aiViewer.status)}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        className={[
+                          'rounded-md px-2 py-1 text-[11px] font-semibold border',
+                          aiViewerMode === 'result'
+                            ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
+                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40',
+                        ].join(' ')}
+                        onClick={() => setAiViewerMode('result')}
+                      >
+                        最终结果
+                      </button>
+                      <button
+                        type="button"
+                        className={[
+                          'rounded-md px-2 py-1 text-[11px] font-semibold border',
+                          aiViewerMode === 'details'
+                            ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
+                            : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40',
+                        ].join(' ')}
+                        onClick={() => setAiViewerMode('details')}
+                      >
+                        过程详情
+                      </button>
+                      {(() => {
+                        const turns = aiViewer.turns ?? [];
+                        const hasInlineDebug = turns.some((t) => Boolean(t.debugInfo));
+                        const hasPersistedDebug = turns.some((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo));
+                        const canOpenDebug =
+                          hasPersistedDebug &&
+                          (hasInlineDebug ||
+                            (Boolean((aiViewer.conversationId ?? '').trim()) &&
+                              Boolean((aiViewer.assistantMessageId ?? '').trim())));
+                        const debugTitle = !hasPersistedDebug
+                          ? '该任务暂无调试数据（需要开启调试模式）'
+                          : hasInlineDebug
+                            ? '查看请求/响应（已在内存中）'
+                            : !aiViewer.assistantMessageId
+                              ? '调试数据已存在，但 assistantMessageId 尚未就绪'
+                              : '点击加载该轮请求/响应';
 
-	                        return (
-	                          <button
-	                            type="button"
-	                            className={[
-	                              'rounded-md px-2 py-1 text-[11px] font-semibold border flex items-center gap-1',
-	                              aiViewerDebugOpen
-	                                ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
-	                                : canOpenDebug
-	                                  ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40'
-	                                  : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-700',
-	                            ].join(' ')}
-	                            disabled={!canOpenDebug}
-	                            title={debugTitle}
-	                            onClick={() => {
-	                              if (!canOpenDebug) return;
-	                              const turnsWithDebug = (aiViewer.turns ?? [])
-	                                .filter((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo))
-	                                .slice()
-	                                .sort((a, b) => a.turnIndex - b.turnIndex);
-	                              const latestTurnWithDebug =
-	                                turnsWithDebug.length > 0 ? turnsWithDebug[turnsWithDebug.length - 1] : null;
-	                              setAiViewerDebugInitialTurnId(latestTurnWithDebug?.turnId ?? null);
-	                              setAiViewerDebugOpen(true);
-	                            }}
-	                          >
-	                            <Bug size={12} />
-	                            Debug
-	                          </button>
-	                        );
-	                      })()}
-	                    </div>
-	                  </div>
+                        return (
+                          <button
+                            type="button"
+                            className={[
+                              'rounded-md px-2 py-1 text-[11px] font-semibold border flex items-center gap-1',
+                              aiViewerDebugOpen
+                                ? 'border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/40 dark:bg-blue-900/20 dark:text-blue-200'
+                                : canOpenDebug
+                                  ? 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-900/40'
+                                  : 'cursor-not-allowed border-gray-200 bg-gray-50 text-gray-300 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-700',
+                            ].join(' ')}
+                            disabled={!canOpenDebug}
+                            title={debugTitle}
+                            onClick={() => {
+                              if (!canOpenDebug) return;
+                              const turnsWithDebug = (aiViewer.turns ?? [])
+                                .filter((t) => Boolean(t.debugInfo) || Boolean(t.hasDebugInfo))
+                                .slice()
+                                .sort((a, b) => a.turnIndex - b.turnIndex);
+                              const latestTurnWithDebug =
+                                turnsWithDebug.length > 0 ? turnsWithDebug[turnsWithDebug.length - 1] : null;
+                              setAiViewerDebugInitialTurnId(latestTurnWithDebug?.turnId ?? null);
+                              setAiViewerDebugOpen(true);
+                            }}
+                          >
+                            <Bug size={12} />
+                            Debug
+                          </button>
+                        );
+                      })()}
+                    </div>
+                  </div>
 
-	                  {(() => {
-	                    const isStreaming = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status);
-	                    const savedAnswerMd = (() => {
-	                      if (aiViewer.kind === 'symbol_analysis' && aiViewer.analysisMeta) {
-	                        const cacheKey = makeSymbolAnalysisCacheKey(
-	                          aiViewer.analysisMeta.filePath,
-	                          aiViewer.analysisMeta.symbolKey
-	                        );
-	                        return symbolAnalysisCache[cacheKey]?.answerMd ?? null;
-	                      }
-	                      if (aiViewer.kind === 'folder_analysis' && aiViewer.folderAnalysisMeta) {
-	                        const cacheKey = makeFolderAnalysisCacheKey(aiViewer.folderAnalysisMeta.folderPath);
-	                        return folderAnalysisCache[cacheKey]?.answerMd ?? null;
-	                      }
-	                      return null;
-	                    })();
-	                    const finalMd = (savedAnswerMd ?? extractLatestTurnMarkdownFromBlocks(aiViewer.blocks, aiViewer.turns)).trim();
+                  {(() => {
+                    const isStreaming = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status);
+                    const savedAnswerMd = (() => {
+                      if (aiViewer.kind === 'symbol_analysis' && aiViewer.analysisMeta) {
+                        const cacheKey = makeSymbolAnalysisCacheKey(
+                          aiViewer.analysisMeta.filePath,
+                          aiViewer.analysisMeta.symbolKey
+                        );
+                        return symbolAnalysisCache[cacheKey]?.answerMd ?? null;
+                      }
+                      if (aiViewer.kind === 'folder_analysis' && aiViewer.folderAnalysisMeta) {
+                        const cacheKey = makeFolderAnalysisCacheKey(aiViewer.folderAnalysisMeta.folderPath);
+                        return folderAnalysisCache[cacheKey]?.answerMd ?? null;
+                      }
+                      return null;
+                    })();
+                    const finalMd = (savedAnswerMd ?? extractLatestTurnMarkdownFromBlocks(aiViewer.blocks, aiViewer.turns)).trim();
 
-	                    if (aiViewerMode === 'result') {
-	                      if (aiViewer.status === 'error' && !finalMd) {
-	                        return (
-	                          <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-gray-800 dark:bg-gray-950 dark:text-red-300">
-	                            {aiViewer.error || '未知错误'}
-	                          </pre>
-	                        );
-	                      }
-	                      if (!finalMd && isStreaming) {
-	                        return (
-	                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
-	                            暂无输出…
-	                          </div>
-	                        );
-	                      }
-	                      return (
-	                        <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
-	                          <DeferredMarkdown content={finalMd || ''} conversationId={aiViewer.conversationId ?? null} minDelayMs={120} />
-	                        </div>
-	                      );
-	                    }
+                    if (aiViewerMode === 'result') {
+                      if (aiViewer.status === 'error' && !finalMd) {
+                        return (
+                          <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-gray-800 dark:bg-gray-950 dark:text-red-300">
+                            {aiViewer.error || '未知错误'}
+                          </pre>
+                        );
+                      }
+                      if (!finalMd && isStreaming) {
+                        return (
+                          <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
+                            暂无输出…
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
+                          <DeferredMarkdown content={finalMd || ''} conversationId={aiViewer.conversationId ?? null} minDelayMs={120} />
+                        </div>
+                      );
+                    }
 
-	                    if (aiViewer.status === 'error' && (!aiViewer.blocks || aiViewer.blocks.length === 0)) {
-	                      return (
-	                        <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-gray-800 dark:bg-gray-950 dark:text-red-300">
-	                          {aiViewer.error || '未知错误'}
-	                        </pre>
-	                      );
-	                    }
-	                    if (aiViewer.blocks && aiViewer.blocks.length > 0) {
-	                      return (
-	                        <MessageBlocks
-	                          blocks={aiViewer.blocks}
-	                          conversationId={aiViewer.conversationId}
-	                          isStreaming={isStreaming}
-	                          messageSource={isStreaming ? 'live' : 'history'}
-	                          turns={aiViewer.turns}
-	                          assistantMessageId={aiViewer.assistantMessageId}
-	                        />
-	                      );
-	                    }
-	                    return (
-	                      <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
-	                        暂无输出…
-	                      </div>
-	                    );
-	                  })()}
-	                </div>
-	              ) : (
-	                <>
+                    if (aiViewer.status === 'error' && (!aiViewer.blocks || aiViewer.blocks.length === 0)) {
+                      return (
+                        <pre className="whitespace-pre-wrap break-words rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-red-700 dark:border-gray-800 dark:bg-gray-950 dark:text-red-300">
+                          {aiViewer.error || '未知错误'}
+                        </pre>
+                      );
+                    }
+                    if (aiViewer.blocks && aiViewer.blocks.length > 0) {
+                      return (
+                        <MessageBlocks
+                          blocks={aiViewer.blocks}
+                          conversationId={aiViewer.conversationId}
+                          isStreaming={isStreaming}
+                          messageSource={isStreaming ? 'live' : 'history'}
+                          turns={aiViewer.turns}
+                          assistantMessageId={aiViewer.assistantMessageId}
+                        />
+                      );
+                    }
+                    return (
+                      <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-500 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-400">
+                        暂无输出…
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <>
                   {/* Thinking (collapsible) */}
                   {aiViewer.thinking && (
                     <details open={false}>
@@ -13543,14 +13561,14 @@ type OpenFromLinkErrorInfo = {
                   {/* Main answer */}
                   <div>
                     <div className="mb-1 text-[11px] font-medium text-gray-600 dark:text-gray-300">
-	                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
-	                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
-	                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
-	                          <Loader2 size={10} className="animate-spin" />
-	                          {describeWorkstudioAiBubbleStatus(aiViewer.status)}
-	                        </span>
-	                      )}
-	                    </div>
+                      {aiViewer.kind === 'symbol_analysis' || aiViewer.kind === 'folder_analysis' ? '分析结果' : '回答'}
+                      {['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'].includes(aiViewer.status) && (
+                        <span className="ml-1.5 inline-flex items-center gap-1 text-blue-500">
+                          <Loader2 size={10} className="animate-spin" />
+                          {describeWorkstudioAiBubbleStatus(aiViewer.status)}
+                        </span>
+                      )}
+                    </div>
                     <div className="rounded-lg border border-gray-200 bg-white px-3 py-2 dark:border-gray-800 dark:bg-gray-950">
                       {aiViewer.status === 'error' ? (
                         <pre className="whitespace-pre-wrap break-words text-xs text-red-700 dark:text-red-300">
@@ -13891,26 +13909,26 @@ type OpenFromLinkErrorInfo = {
                         <input
                           type="checkbox"
                           className="mt-0.5"
-	                          checked={outlinePreferLsp}
-	                          onChange={() => {
-	                            const next = !outlinePreferLsp;
-	                            setOutlinePreferLsp(next);
-	                            setOutlineRefreshSeq((v) => v + 1);
-	                            {
-	                              const wsId = String(workstudioId ?? '').trim();
-	                              const file = activeTextFileInFocusedPane;
-	                              const normalizedPath = file ? normalizeFsPath(file.path) : '';
-	                              if (wsId && normalizedPath && !isUntitledPath(normalizedPath)) {
-	                                const refreshKey = `${wsId}::${normalizedPath}`;
-	                                pendingOutlineAnalysisRefreshByFileRef.current.add(refreshKey);
-	                                prefetchedSymbolAnalysisStatusByFileRef.current.delete(refreshKey);
-	                              }
-	                            }
-	                            if (next) {
-	                              setOutlineItems([]);
-	                              setOutlineSource('none');
-	                              setOutlineError(null);
-	                              setOutlineLoading(true);
+                          checked={outlinePreferLsp}
+                          onChange={() => {
+                            const next = !outlinePreferLsp;
+                            setOutlinePreferLsp(next);
+                            setOutlineRefreshSeq((v) => v + 1);
+                            {
+                              const wsId = String(workstudioId ?? '').trim();
+                              const file = activeTextFileInFocusedPane;
+                              const normalizedPath = file ? normalizeFsPath(file.path) : '';
+                              if (wsId && normalizedPath && !isUntitledPath(normalizedPath)) {
+                                const refreshKey = `${wsId}::${normalizedPath}`;
+                                pendingOutlineAnalysisRefreshByFileRef.current.add(refreshKey);
+                                prefetchedSymbolAnalysisStatusByFileRef.current.delete(refreshKey);
+                              }
+                            }
+                            if (next) {
+                              setOutlineItems([]);
+                              setOutlineSource('none');
+                              setOutlineError(null);
+                              setOutlineLoading(true);
                             }
                           }}
                         />
@@ -14101,27 +14119,27 @@ type OpenFromLinkErrorInfo = {
                                     if (!file) return null;
                                     const active = file.id === activeFileId;
                                     const title = `${file.title}${file.dirty ? ' *' : ''}${file.externalChanged || file.missingOnDisk ? ' !' : ''}`;
-	                                    return (
-		                                      <SortableTab
-		                                        key={`${pane.id}:${file.id}`}
-		                                        id={file.id}
-		                                        active={active}
-		                                        title={title}
-		                                        tooltip={file.path}
-		                                        pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
-		                                        onClick={() => activateTabInPane(pane.id, file.id)}
-		                                        onClose={() => closeFileTab(file.id)}
-		                                        onMouseEnter={(e) => showTabPathTooltip(e, file.path)}
-		                                        onMouseLeave={hideTabPathTooltip}
-		                                        onContextMenu={(e) => {
-		                                          e.preventDefault();
-		                                          e.stopPropagation();
-		                                          hideTabPathTooltip();
-		                                          setTabMenu({
-		                                            visible: true,
-		                                            x: e.clientX,
-		                                            y: e.clientY,
-		                                            paneId: pane.id,
+                                    return (
+                                      <SortableTab
+                                        key={`${pane.id}:${file.id}`}
+                                        id={file.id}
+                                        active={active}
+                                        title={title}
+                                        tooltip={file.path}
+                                        pinnedWhileDragging={pinActiveTabWhileDragging && activeDragTabId === file.id}
+                                        onClick={() => activateTabInPane(pane.id, file.id)}
+                                        onClose={() => closeFileTab(file.id)}
+                                        onMouseEnter={(e) => showTabPathTooltip(e, file.path)}
+                                        onMouseLeave={hideTabPathTooltip}
+                                        onContextMenu={(e) => {
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          hideTabPathTooltip();
+                                          setTabMenu({
+                                            visible: true,
+                                            x: e.clientX,
+                                            y: e.clientY,
+                                            paneId: pane.id,
                                             fileId: file.id,
                                             path: file.path,
                                           });
@@ -14196,6 +14214,7 @@ type OpenFromLinkErrorInfo = {
                                       onClick={(event) => openBreadcrumbSymbolMenuForItem(event, item, symbolIdx)}
                                       title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
                                     >
+                                      <SymbolKindIcon kind={item.kind} size={12} className="shrink-0 opacity-80" />
                                       <span className="truncate">{item.name}</span>
                                       <ChevronDown size={10} className="shrink-0 opacity-60" />
                                     </button>
@@ -14470,10 +14489,10 @@ type OpenFromLinkErrorInfo = {
       )}
 
       {filePaletteOpen && (
-      <div className="fixed inset-0 z-[210]">
-        <div
-          className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
-          onClick={closeFilePalette}
+        <div className="fixed inset-0 z-[210]">
+          <div
+            className="absolute inset-0 bg-black/25 backdrop-blur-[1px]"
+            onClick={closeFilePalette}
           />
           <div className="absolute left-1/2 top-16 w-[720px] max-w-[92vw] -translate-x-1/2 rounded-2xl border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-900">
             <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
@@ -14661,85 +14680,84 @@ type OpenFromLinkErrorInfo = {
                   </div>
                 )}
 
-	                {codeIntelligenceConfig?.enabled && lspMenuServers.length > 0 && (
-	                  <>
-	                    <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
-	                      <div className="flex items-center justify-between gap-2">
-	                        <div className="text-xs font-semibold text-gray-900 dark:text-gray-100">索引简报</div>
-	                        <button
-	                          type="button"
-	                          className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
-	                          onClick={() => void refreshCodeIndexBrief()}
-	                          title="重新拉取本地落盘索引状态"
-	                        >
-	                          刷新
-	                        </button>
-	                      </div>
+                {codeIntelligenceConfig?.enabled && lspMenuServers.length > 0 && (
+                  <>
+                    <div className="rounded-lg border border-gray-200 bg-white p-2 dark:border-gray-700 dark:bg-gray-900">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-gray-900 dark:text-gray-100">索引简报</div>
+                        <button
+                          type="button"
+                          className="rounded border border-gray-200 px-2 py-1 text-[11px] text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+                          onClick={() => void refreshCodeIndexBrief()}
+                          title="重新拉取本地落盘索引状态"
+                        >
+                          刷新
+                        </button>
+                      </div>
 
-	                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-	                        用于判断上一次“本地索引缓存”是否落盘成功（与 rust-analyzer 自身缓存不同）。
-	                      </div>
+                      <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                        用于判断上一次“本地索引缓存”是否落盘成功（与 rust-analyzer 自身缓存不同）。
+                      </div>
 
-	                      {codeIndexBriefError ? (
-	                        <div className="mt-1 text-[11px] text-red-700 dark:text-red-200 whitespace-pre-wrap break-words">
-	                          读取索引缓存简报失败：{codeIndexBriefError}
-	                        </div>
-	                      ) : codeIndexBrief ? (
-	                        <div className="mt-2 space-y-1 text-[11px] text-gray-700 dark:text-gray-200">
-	                          <div className="flex items-center justify-between gap-2">
-	                            <div className="min-w-0 truncate">
-	                              DB：<span className="font-mono">{codeIndexBrief.dbPath}</span>
-	                            </div>
-	                            <div className="flex flex-shrink-0 items-center gap-2 text-gray-500 dark:text-gray-400">
-	                              <span>symbols={codeIndexBrief.fileSymbolsCount}</span>
-	                              <span>
-	                                {codeIndexBrief.shouldSkipFullScan ? '可跳过全量扫描' : '可能触发全量扫描'}
-	                              </span>
-	                            </div>
-	                          </div>
-	                          <div className="text-gray-500 dark:text-gray-400">
-	                            上次扫描完成：
-	                            {codeIndexBrief.fullScanCompletedAtMs
-	                              ? new Date(codeIndexBrief.fullScanCompletedAtMs).toLocaleString()
-	                              : '（未记录）'}
-	                            {codeIndexBrief.fullScanCompletedAtMs
-	                              ? ` · roots=${codeIndexBrief.sameRoots ? '一致' : '变化'} · fresh=${
-	                                  codeIndexBrief.isFresh ? '是' : '否'
-	                                }`
-	                              : ''}
-	                          </div>
-	                        </div>
-	                      ) : (
-	                        <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">（尚未生成简报）</div>
-	                      )}
+                      {codeIndexBriefError ? (
+                        <div className="mt-1 text-[11px] text-red-700 dark:text-red-200 whitespace-pre-wrap break-words">
+                          读取索引缓存简报失败：{codeIndexBriefError}
+                        </div>
+                      ) : codeIndexBrief ? (
+                        <div className="mt-2 space-y-1 text-[11px] text-gray-700 dark:text-gray-200">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 truncate">
+                              DB：<span className="font-mono">{codeIndexBrief.dbPath}</span>
+                            </div>
+                            <div className="flex flex-shrink-0 items-center gap-2 text-gray-500 dark:text-gray-400">
+                              <span>symbols={codeIndexBrief.fileSymbolsCount}</span>
+                              <span>
+                                {codeIndexBrief.shouldSkipFullScan ? '可跳过全量扫描' : '可能触发全量扫描'}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-gray-500 dark:text-gray-400">
+                            上次扫描完成：
+                            {codeIndexBrief.fullScanCompletedAtMs
+                              ? new Date(codeIndexBrief.fullScanCompletedAtMs).toLocaleString()
+                              : '（未记录）'}
+                            {codeIndexBrief.fullScanCompletedAtMs
+                              ? ` · roots=${codeIndexBrief.sameRoots ? '一致' : '变化'} · fresh=${codeIndexBrief.isFresh ? '是' : '否'
+                              }`
+                              : ''}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">（尚未生成简报）</div>
+                      )}
 
-	                      {lspIndexBriefs.length > 0 && (
-	                        <div className="mt-2 border-t border-gray-200 pt-2 dark:border-gray-800">
-	                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">
-	                            LSP 最近完成索引
-	                          </div>
-	                          <div className="mt-1 space-y-1">
-	                            {lspIndexBriefs.slice(0, 3).map((b) => (
-	                              <div key={`lsp-brief:${b.languageId}:${b.completedAtMs}`} className="text-[11px] text-gray-600 dark:text-gray-300">
-	                                <span className="font-mono">{b.languageId}</span> ·{' '}
-	                                {new Date(b.completedAtMs).toLocaleTimeString()}
-	                                {typeof b.durationMs === 'number' ? ` · ${Math.round(b.durationMs / 1000)}s` : ''}
-	                                {b.hadError ? ' · 有错误' : ''}
-	                                {b.lastProgress ? ` · ${b.lastProgress}` : ''}
-	                              </div>
-	                            ))}
-	                          </div>
-	                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
-	                            说明：LSP “索引完成”表示已就绪可用；是否复用 rust-analyzer 内部落盘缓存，本应用无法直接确认（可用重启耗时对比判断）。
-	                          </div>
-	                        </div>
-	                      )}
-	                    </div>
+                      {lspIndexBriefs.length > 0 && (
+                        <div className="mt-2 border-t border-gray-200 pt-2 dark:border-gray-800">
+                          <div className="text-[11px] font-semibold text-gray-800 dark:text-gray-100">
+                            LSP 最近完成索引
+                          </div>
+                          <div className="mt-1 space-y-1">
+                            {lspIndexBriefs.slice(0, 3).map((b) => (
+                              <div key={`lsp-brief:${b.languageId}:${b.completedAtMs}`} className="text-[11px] text-gray-600 dark:text-gray-300">
+                                <span className="font-mono">{b.languageId}</span> ·{' '}
+                                {new Date(b.completedAtMs).toLocaleTimeString()}
+                                {typeof b.durationMs === 'number' ? ` · ${Math.round(b.durationMs / 1000)}s` : ''}
+                                {b.hadError ? ' · 有错误' : ''}
+                                {b.lastProgress ? ` · ${b.lastProgress}` : ''}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+                            说明：LSP “索引完成”表示已就绪可用；是否复用 rust-analyzer 内部落盘缓存，本应用无法直接确认（可用重启耗时对比判断）。
+                          </div>
+                        </div>
+                      )}
+                    </div>
 
-	                    {wsSelectedLspLanguageIds.length === 0 ? (
-	                      <div className="text-sm text-gray-600 dark:text-gray-300">
-	                        本工作区未启用任何语言：请在上方勾选需要的语言。
-	                      </div>
+                    {wsSelectedLspLanguageIds.length === 0 ? (
+                      <div className="text-sm text-gray-600 dark:text-gray-300">
+                        本工作区未启用任何语言：请在上方勾选需要的语言。
+                      </div>
                     ) : (
                       <div className="space-y-2">
                         {lspMenuServers
@@ -14976,6 +14994,7 @@ type OpenFromLinkErrorInfo = {
                     }}
                     title={`${item.name}（${normalizeOutlineKind(item.kind)}）${item.detail ? ` · ${item.detail}` : ''}`}
                   >
+                    <SymbolKindIcon kind={item.kind} size={16} className="shrink-0" />
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-medium">{item.name}</div>
                       <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
@@ -14988,9 +15007,6 @@ type OpenFromLinkErrorInfo = {
                         {item.children.length}
                       </span>
                     )}
-                    <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-300">
-                      {item.kind}
-                    </span>
                   </button>
                 );
               })
@@ -15006,192 +15022,193 @@ type OpenFromLinkErrorInfo = {
           style={{ left: outlineMenu.x, top: outlineMenu.y }}
           onMouseDown={(e) => e.stopPropagation()}
         >
-		          {(() => {
-			            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
-			            const isBusy = Boolean(busyStatus);
-			            const analysisExists =
-			              typeof outlineMenu.analysisExists === 'boolean'
-			                ? outlineMenu.analysisExists
-			                : outlineMenu.analysis
-			                  ? true
-			                  : outlineMenu.analysis === null
-			                    ? false
-			                    : undefined;
-			            const actionLabel = analysisExists ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
-			            const menuCacheKey = makeSymbolAnalysisCacheKey(outlineMenu.filePath, outlineMenu.item.key);
-			            const summary = menuCacheKey ? symbolAnalysisSummaryCache[menuCacheKey] : undefined;
-			            const healthLevel = clampHealthLevel(summary?.healthLevel ?? outlineMenu.analysis?.healthLevel);
-			            const verdictRaw = String((summary?.verdict ?? outlineMenu.analysis?.verdict ?? '') as string).trim();
-			            const verdictLabel = verdictToLabel(verdictRaw);
-			            const diagnosisSummary = String(
-			              (summary?.diagnosisSummary ?? outlineMenu.analysis?.diagnosisSummary ?? '') as string
-			            ).trim();
-			            const counts = summary?.diagnosisCounts ?? outlineMenu.analysis?.diagnosisCounts;
-			            const hasAnyDiagnosis = Boolean(healthLevel || verdictLabel || diagnosisSummary || counts);
-			            const isDark =
-			              typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
-			            const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
-			            const statusTag = (() => {
-			              switch (busyStatus) {
-			                case 'queued':
-			                  return '（排队中）';
-	                case 'connecting':
-	                  return '（连接中）';
-	                case 'thinking':
-	                  return '（思考中）';
-	                case 'tool_calling':
-	                  return '（调用工具）';
-	                case 'streaming':
-	                  return '（生成中）';
-	                default:
-	                  return '';
-	              }
-	            })();
+          {(() => {
+            const busyStatus = getActiveSymbolAnalysisStatus(outlineMenu.filePath, outlineMenu.item.key);
+            const isBusy = Boolean(busyStatus);
+            const analysisExists =
+              typeof outlineMenu.analysisExists === 'boolean'
+                ? outlineMenu.analysisExists
+                : outlineMenu.analysis
+                  ? true
+                  : outlineMenu.analysis === null
+                    ? false
+                    : undefined;
+            const actionLabel = analysisExists ? '重新分析' : outlineAnalysisActionLabel(outlineMenu.item.kind);
+            const menuCacheKey = makeSymbolAnalysisCacheKey(outlineMenu.filePath, outlineMenu.item.key);
+            const summary = menuCacheKey ? symbolAnalysisSummaryCache[menuCacheKey] : undefined;
+            const healthLevel = clampHealthLevel(summary?.healthLevel ?? outlineMenu.analysis?.healthLevel);
+            const verdictRaw = String((summary?.verdict ?? outlineMenu.analysis?.verdict ?? '') as string).trim();
+            const verdictLabel = verdictToLabel(verdictRaw);
+            const diagnosisSummary = String(
+              (summary?.diagnosisSummary ?? outlineMenu.analysis?.diagnosisSummary ?? '') as string
+            ).trim();
+            const counts = summary?.diagnosisCounts ?? outlineMenu.analysis?.diagnosisCounts;
+            const hasAnyDiagnosis = Boolean(healthLevel || verdictLabel || diagnosisSummary || counts);
+            const isDark =
+              typeof document !== 'undefined' && Boolean(document.documentElement?.classList?.contains('dark'));
+            const healthColor = healthLevel ? healthLevelToColor(healthLevel, isDark) : null;
+            const statusTag = (() => {
+              switch (busyStatus) {
+                case 'queued':
+                  return '（排队中）';
+                case 'connecting':
+                  return '（连接中）';
+                case 'thinking':
+                  return '（思考中）';
+                case 'tool_calling':
+                  return '（调用工具）';
+                case 'streaming':
+                  return '（生成中）';
+                default:
+                  return '';
+              }
+            })();
 
-	            return (
-		              <>
-		          <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
-		            {outlineMenu.item.name}
-	            <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-	              {normalizeOutlineKind(outlineMenu.item.kind)}
-	            </span>
-	          </div>
-	          {analysisExists ? (
-	            <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
-	              <div className="flex items-center gap-2">
-	                <span className="inline-flex items-center gap-1">
-	                  <span
-	                    className={[
-	                      'inline-block h-2 w-2 rounded-full',
-	                      !healthColor ? 'bg-emerald-500 dark:bg-emerald-400' : '',
-	                    ].join(' ')}
-	                    style={healthColor ? { backgroundColor: healthColor } : undefined}
-	                  />
-	                  <span className="font-medium">AI</span>
-	                </span>
-	                {healthLevel ? (
-	                  <span className="font-mono" style={healthColor ? { color: healthColor } : undefined}>
-	                    H{healthLevel}/10
-	                  </span>
-	                ) : (
-	                  <span className="font-mono">H?</span>
-	                )}
-	                {verdictLabel ? <span>{verdictLabel}</span> : null}
-	                {counts ? (
-	                  <span className="text-gray-400 dark:text-gray-500">
-	                    E{counts.errors} D{counts.defects} I{counts.improvements}
-	                  </span>
-	                ) : null}
-	              </div>
-	              {diagnosisSummary ? (
-	                <div className="mt-1 truncate" title={diagnosisSummary}>
-	                  {diagnosisSummary}
-	                </div>
-	              ) : hasAnyDiagnosis ? null : (
-	                <div className="mt-1 truncate" title="已保存分析结果，但未包含可解析的诊断字段（可能是旧结果或模型未按协议输出）。">
-	                  已保存分析结果（无诊断字段）
-	                </div>
-	              )}
-	            </div>
-	          ) : null}
-	          <div className="py-1 text-sm">
-            <button
-              type="button"
-              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-              title="将该符号对应的代码片段加入主窗口 Chat 输入框"
-              onClick={() => {
-                const menu = outlineMenu;
-                setOutlineMenu(null);
-                void addOutlineSymbolToMainChat(menu.filePath, menu.languageId, menu.item).catch((err) => {
-                  const msg = err instanceof Error ? err.message : String(err);
-                  showNavToast(msg || '加入到 Chat 失败');
-                });
-              }}
-            >
-              加入到 Chat
-            </button>
-            <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-            <button
-              type="button"
-              disabled={isBusy}
-              title={isBusy ? '该符号正在分析中（或在队列中），请等待完成后再试' : undefined}
-              className={[
-                'w-full px-3 py-2 text-left',
-                isBusy
-                  ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
-                  : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
-	              ].join(' ')}
-		              onClick={() => {
-		                const menu = outlineMenu;
-		                void (async () => {
-		                  const hasExisting =
-		                    typeof menu.analysisExists === 'boolean' ? menu.analysisExists : Boolean(menu.analysis);
-		                  if (hasExisting) {
-		                    const ok = await Promise.resolve(window.confirm('已存在分析结果，确定重新分析并覆盖吗？'));
-		                    if (!ok) return;
-		                  }
-		                  setOutlineMenu(null);
-		                  try {
-		                    await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
-		                  } catch (err) {
-		                    const msg = err instanceof Error ? err.message : String(err);
-		                    showNavToast(msg);
-		                  }
-		                })();
-		              }}
-	            >
-              <span>{actionLabel}</span>
-              <span className="text-gray-400">：</span>
-		              <span
-		                className={analysisExists && !healthColor ? 'text-emerald-700 dark:text-emerald-300' : ''}
-		                style={
-		                  analysisExists && healthColor
-		                    ? {
-		                        textDecorationLine: 'underline',
-		                        textDecorationColor: healthColor,
-		                        textDecorationThickness: '2px',
-		                        textUnderlineOffset: '2px',
-		                      }
-		                    : undefined
-		                }
-		              >
-		                {outlineMenu.item.name}
-		              </span>
-              {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
-            </button>
+            return (
+              <>
+                <div className="flex items-center gap-2 px-3 py-2 text-xs text-gray-500 dark:text-gray-400 truncate" title={outlineMenu.item.name}>
+                  <SymbolKindIcon kind={outlineMenu.item.kind} size={14} className="shrink-0" />
+                  <span className="truncate font-medium text-gray-700 dark:text-gray-200">{outlineMenu.item.name}</span>
+                  <span className="ml-auto shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                    {normalizeOutlineKind(outlineMenu.item.kind)}
+                  </span>
+                </div>
+                {analysisExists ? (
+                  <div className="px-3 pb-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-flex items-center gap-1">
+                        <span
+                          className={[
+                            'inline-block h-2 w-2 rounded-full',
+                            !healthColor ? 'bg-emerald-500 dark:bg-emerald-400' : '',
+                          ].join(' ')}
+                          style={healthColor ? { backgroundColor: healthColor } : undefined}
+                        />
+                        <span className="font-medium">AI</span>
+                      </span>
+                      {healthLevel ? (
+                        <span className="font-mono" style={healthColor ? { color: healthColor } : undefined}>
+                          H{healthLevel}/10
+                        </span>
+                      ) : (
+                        <span className="font-mono">H?</span>
+                      )}
+                      {verdictLabel ? <span>{verdictLabel}</span> : null}
+                      {counts ? (
+                        <span className="text-gray-400 dark:text-gray-500">
+                          E{counts.errors} D{counts.defects} I{counts.improvements}
+                        </span>
+                      ) : null}
+                    </div>
+                    {diagnosisSummary ? (
+                      <div className="mt-1 truncate" title={diagnosisSummary}>
+                        {diagnosisSummary}
+                      </div>
+                    ) : hasAnyDiagnosis ? null : (
+                      <div className="mt-1 truncate" title="已保存分析结果，但未包含可解析的诊断字段（可能是旧结果或模型未按协议输出）。">
+                        已保存分析结果（无诊断字段）
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+                <div className="py-1 text-sm">
+                  <button
+                    type="button"
+                    className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                    title="将该符号对应的代码片段加入主窗口 Chat 输入框"
+                    onClick={() => {
+                      const menu = outlineMenu;
+                      setOutlineMenu(null);
+                      void addOutlineSymbolToMainChat(menu.filePath, menu.languageId, menu.item).catch((err) => {
+                        const msg = err instanceof Error ? err.message : String(err);
+                        showNavToast(msg || '加入到 Chat 失败');
+                      });
+                    }}
+                  >
+                    加入到 Chat
+                  </button>
+                  <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    title={isBusy ? '该符号正在分析中（或在队列中），请等待完成后再试' : undefined}
+                    className={[
+                      'w-full px-3 py-2 text-left',
+                      isBusy
+                        ? 'cursor-not-allowed text-gray-400 dark:text-gray-600'
+                        : 'text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800',
+                    ].join(' ')}
+                    onClick={() => {
+                      const menu = outlineMenu;
+                      void (async () => {
+                        const hasExisting =
+                          typeof menu.analysisExists === 'boolean' ? menu.analysisExists : Boolean(menu.analysis);
+                        if (hasExisting) {
+                          const ok = await Promise.resolve(window.confirm('已存在分析结果，确定重新分析并覆盖吗？'));
+                          if (!ok) return;
+                        }
+                        setOutlineMenu(null);
+                        try {
+                          await runOutlineSymbolAnalysis(menu.filePath, menu.languageId, menu.item);
+                        } catch (err) {
+                          const msg = err instanceof Error ? err.message : String(err);
+                          showNavToast(msg);
+                        }
+                      })();
+                    }}
+                  >
+                    <span>{actionLabel}</span>
+                    <span className="text-gray-400">：</span>
+                    <span
+                      className={analysisExists && !healthColor ? 'text-emerald-700 dark:text-emerald-300' : ''}
+                      style={
+                        analysisExists && healthColor
+                          ? {
+                            textDecorationLine: 'underline',
+                            textDecorationColor: healthColor,
+                            textDecorationThickness: '2px',
+                            textUnderlineOffset: '2px',
+                          }
+                          : undefined
+                      }
+                    >
+                      {outlineMenu.item.name}
+                    </span>
+                    {statusTag ? <span className="ml-2 text-xs text-gray-400 dark:text-gray-600">{statusTag}</span> : null}
+                  </button>
 
-            {analysisExists === undefined ? (
-              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
-	            ) : analysisExists ? (
-	              <>
-	                <button
-	                  type="button"
-	                  className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
-                  onClick={() => {
-                    const menu = outlineMenu;
-                    setOutlineMenu(null);
-                    void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
-                  }}
-                >
-                  查看分析
-                </button>
-                <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
-                <button
-                  type="button"
-                  className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
-                  onClick={() => {
-                    const menu = outlineMenu;
-                    setOutlineMenu(null);
-                    void deleteOutlineSymbolAnalysis(menu.filePath, menu.item);
-                  }}
-                >
-                  删除分析
-                </button>
-              </>
-            ) : (
-              <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
-            )}
-          </div>
+                  {analysisExists === undefined ? (
+                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">加载分析状态中…</div>
+                  ) : analysisExists ? (
+                    <>
+                      <button
+                        type="button"
+                        className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+                        onClick={() => {
+                          const menu = outlineMenu;
+                          setOutlineMenu(null);
+                          void viewOutlineSymbolAnalysis(menu.filePath, menu.item);
+                        }}
+                      >
+                        查看分析
+                      </button>
+                      <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
+                      <button
+                        type="button"
+                        className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
+                        onClick={() => {
+                          const menu = outlineMenu;
+                          setOutlineMenu(null);
+                          void deleteOutlineSymbolAnalysis(menu.filePath, menu.item);
+                        }}
+                      >
+                        删除分析
+                      </button>
+                    </>
+                  ) : (
+                    <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">尚无分析结果</div>
+                  )}
+                </div>
               </>
             );
           })()}
@@ -15348,9 +15365,9 @@ type OpenFromLinkErrorInfo = {
                   setContextMenu(null);
                   void addPathToMainChat(folder, 'folder');
                 }}
-                >
-                  加入到 Chat
-                </button>
+              >
+                加入到 Chat
+              </button>
               <button
                 type="button"
                 className="w-full px-3 py-2 text-left text-red-600 hover:bg-gray-100 dark:text-red-400 dark:hover:bg-gray-800"
@@ -15578,9 +15595,9 @@ type OpenFromLinkErrorInfo = {
                   setContextMenu(null);
                   void revealItemInDir(folder);
                 }}
-                >
-                  在系统中打开
-                </button>
+              >
+                在系统中打开
+              </button>
               <div className="my-1 border-t border-gray-200 dark:border-gray-700" />
               {(() => {
                 const folderPath = contextMenu.folder;
@@ -15777,6 +15794,19 @@ type OpenFromLinkErrorInfo = {
             {tabMenu.path}
           </div>
           <div className="py-1 text-sm">
+            <button
+              type="button"
+              className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"
+              onClick={() => {
+                const menu = tabMenu;
+                setTabMenu(null);
+                const pane = paneById.get(menu.paneId);
+                if (!pane) return;
+                closeFileTab(menu.fileId);
+              }}
+            >
+              关闭
+            </button>
             <button
               type="button"
               className="w-full px-3 py-2 text-left text-gray-700 hover:bg-gray-100 dark:text-gray-200 dark:hover:bg-gray-800"

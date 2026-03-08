@@ -1,5 +1,6 @@
 import React from "react";
 import { Search } from "lucide-react";
+import { SymbolKindIcon } from "./SymbolKindIcon";
 
 import type { SymbolSearchItem } from "./symbolSearch";
 
@@ -153,10 +154,14 @@ export const SymbolSearchDialog: React.FC<SymbolSearchDialogProps> = ({
                     title={item.filePath}
                   >
                     <div className="flex items-center gap-2">
+                      <SymbolKindIcon kind={item.kind} size={14} className="shrink-0" />
                       <div className="min-w-0 flex-1 truncate text-sm font-medium">
                         {item.name}
                       </div>
-                      <span className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                      <span
+                        className="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                        title={item.kind}
+                      >
                         {item.kind}
                       </span>
                     </div>

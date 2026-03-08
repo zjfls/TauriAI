@@ -102,45 +102,45 @@ export const ChatView: React.FC<ChatViewProps> = ({
   showWorkstudioControl = true,
 }) => {
   // Get session from SessionStore
-		  const {
-		    session,
-		    sendMessage,
-		    abortGeneration,
-		    retry: retryMessage,
-		    retryTurn,
-		    cloneConversation,
-		    setSessionModel,
-		    undoToMessage,
-		    moveQueuedMessage,
-		    removeQueuedMessage,
-		    updateQueuedMessageContent,
-        acknowledgeUnreadCompletion,
-			    setSessionRunMode,
-				    setSessionThinkingMode,
-				    setSessionDraftContent,
-				    setSessionDraftWorkspaceMentions,
-				    setSessionDraftCodeSnippets,
-				  } = useSessionStore(
-				    useShallow((state) => ({
-			      session: sessionId ? state.sessions.get(sessionId) : undefined,
-			      sendMessage: state.sendMessage,
-			      abortGeneration: state.abortGeneration,
-		      retry: state.retry,
-		      retryTurn: state.retryTurn,
-		      cloneConversation: state.cloneConversation,
-		      setSessionModel: state.setSessionModel,
-		      undoToMessage: state.undoToMessage,
-		      moveQueuedMessage: state.moveQueuedMessage,
-			      removeQueuedMessage: state.removeQueuedMessage,
-			      updateQueuedMessageContent: state.updateQueuedMessageContent,
-            acknowledgeUnreadCompletion: state.acknowledgeUnreadCompletion,
-			      setSessionRunMode: state.setSessionRunMode,
-				      setSessionThinkingMode: state.setSessionThinkingMode,
-				      setSessionDraftContent: state.setSessionDraftContent,
-				      setSessionDraftWorkspaceMentions: state.setSessionDraftWorkspaceMentions,
-				      setSessionDraftCodeSnippets: state.setSessionDraftCodeSnippets,
-				    }))
-			  );
+  const {
+    session,
+    sendMessage,
+    abortGeneration,
+    retry: retryMessage,
+    retryTurn,
+    cloneConversation,
+    setSessionModel,
+    undoToMessage,
+    moveQueuedMessage,
+    removeQueuedMessage,
+    updateQueuedMessageContent,
+    acknowledgeUnreadCompletion,
+    setSessionRunMode,
+    setSessionThinkingMode,
+    setSessionDraftContent,
+    setSessionDraftWorkspaceMentions,
+    setSessionDraftCodeSnippets,
+  } = useSessionStore(
+    useShallow((state) => ({
+      session: sessionId ? state.sessions.get(sessionId) : undefined,
+      sendMessage: state.sendMessage,
+      abortGeneration: state.abortGeneration,
+      retry: state.retry,
+      retryTurn: state.retryTurn,
+      cloneConversation: state.cloneConversation,
+      setSessionModel: state.setSessionModel,
+      undoToMessage: state.undoToMessage,
+      moveQueuedMessage: state.moveQueuedMessage,
+      removeQueuedMessage: state.removeQueuedMessage,
+      updateQueuedMessageContent: state.updateQueuedMessageContent,
+      acknowledgeUnreadCompletion: state.acknowledgeUnreadCompletion,
+      setSessionRunMode: state.setSessionRunMode,
+      setSessionThinkingMode: state.setSessionThinkingMode,
+      setSessionDraftContent: state.setSessionDraftContent,
+      setSessionDraftWorkspaceMentions: state.setSessionDraftWorkspaceMentions,
+      setSessionDraftCodeSnippets: state.setSessionDraftCodeSnippets,
+    }))
+  );
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
@@ -221,11 +221,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
   });
   const chatWithScope = chatWithThread
     ? {
-        filePath: chatWithThread.filePath,
-        languageId: chatWithThread.languageId,
-        label: chatWithThread.label,
-        range: chatWithThread.range,
-      }
+      filePath: chatWithThread.filePath,
+      languageId: chatWithThread.languageId,
+      label: chatWithThread.label,
+      range: chatWithThread.range,
+    }
     : null;
 
   const maybeAcknowledgeUnreadCompletion = useCallback(() => {
@@ -236,7 +236,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   useEffect(() => {
     if (!conversationId) return;
-    void ensureChatWithThreadForConversation(conversationId).catch(() => {});
+    void ensureChatWithThreadForConversation(conversationId).catch(() => { });
   }, [conversationId, ensureChatWithThreadForConversation]);
 
   // 目录：文本提取与缩略
@@ -512,12 +512,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   // Available web search providers
   const availableWebSearchProviders = useMemo((): WebSearchProvider[] => {
     const providers: WebSearchProvider[] = [];
-    
+
     // Check for native model web search
     if (currentModel?.capabilities?.webSearch) {
       providers.push('native');
     }
-    
+
     // Check for local tool providers
     const ws = config?.general?.webSearchTool;
     if (ws?.tavilyEnabled && ws.tavilyApiKey?.trim()) {
@@ -529,7 +529,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (ws?.googleEnabled && ws.googleApiKey?.trim() && ws.googleCx?.trim()) {
       providers.push('google');
     }
-    
+
     return providers;
   }, [currentModel, config]);
 
@@ -697,10 +697,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Export chat to .tauri.richtxt
   const [exporting, setExporting] = useState(false);
-  
+
   const buildRichTxtMarkdown = useCallback((sessionData: typeof session): string => {
     if (!sessionData) return '';
-    
+
     const lines: string[] = [];
     const exportedAt = new Date().toISOString();
     const title = sessionData.title?.trim() || '对话导出';
@@ -1121,7 +1121,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       cancelled = true;
@@ -1143,8 +1143,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const enabledNames =
       setSkills.length === 0 && set.name === '标准skill集'
         ? skillOutcome.skills
-            .map((s) => s.meta.name)
-            .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
+          .map((s) => s.meta.name)
+          .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
         : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
 
     const byName = new Map(skillOutcome.skills.map((s) => [s.meta.name, s.meta] as const));
@@ -1404,12 +1404,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     let messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
     let totalContextTokens = baseTokens + messageTokens;
 
-	    if (trimEnabled && contextLength > 0) {
-	      const hardLimitTokens = Math.max(1, Math.floor((contextLength * hardLimitPercent) / 100));
-	      const trimTargetTokens = Math.max(
-	        1,
-	        Math.min(hardLimitTokens, Math.floor((contextLength * trimTargetPercent) / 100))
-	      );
+    if (trimEnabled && contextLength > 0) {
+      const hardLimitTokens = Math.max(1, Math.floor((contextLength * hardLimitPercent) / 100));
+      const trimTargetTokens = Math.max(
+        1,
+        Math.min(hardLimitTokens, Math.floor((contextLength * trimTargetPercent) / 100))
+      );
 
       if (totalContextTokens > hardLimitTokens && taskGroups.length > 0) {
         const keepMask = new Array<boolean>(taskGroups.length).fill(false);
@@ -1442,41 +1442,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
         messageTokens = taskGroups.reduce((acc, g) => acc + g.tokens, 0);
         totalContextTokens = baseTokens + messageTokens;
       }
-	    }
+    }
 
-	    const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;
+    const percentage = contextLength > 0 ? (totalContextTokens / contextLength) * 100 : 0;
 
-	    // Use the latest server-returned usage as the "accurate total" reference.
-	    // This reflects the last completed request (not the next predicted request).
-	    const actualUsage = (() => {
-	      for (let i = messages.length - 1; i >= 0; i--) {
-	        const m = messages[i];
-	        if (m?.usage) return m.usage;
-	        const turns = m?.turns;
-	        if (Array.isArray(turns) && turns.length > 0) {
-	          for (let j = turns.length - 1; j >= 0; j--) {
-	            const u = turns[j]?.usage;
-	            if (u) return u;
-	          }
-	        }
-	      }
-	      return undefined;
-	    })();
+    // Use the latest server-returned usage as the "accurate total" reference.
+    // This reflects the last completed request (not the next predicted request).
+    const actualUsage = (() => {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i];
+        if (m?.usage) return m.usage;
+        const turns = m?.turns;
+        if (Array.isArray(turns) && turns.length > 0) {
+          for (let j = turns.length - 1; j >= 0; j--) {
+            const u = turns[j]?.usage;
+            if (u) return u;
+          }
+        }
+      }
+      return undefined;
+    })();
 
-	    return {
-	      systemPrompt: systemPromptTokens,
-	      formatPrompt: formatPromptTokens,
-	      skills: skillsTokens,
-	      messages: messageTokens,
-	      messageGroups: effectiveGroups,
-	      tools: 0,  // Future: tool definitions
-	      mcp: mcpTokens,
-	      actualUsage,
-	      systemPromptText: userSystemPrompt || undefined,
-	      formatPromptText: formatPromptText || undefined,
-	      skillsSectionText: skillsSectionText || undefined,
-	      skillsInjectedText: skillsInjectedText || undefined,
-	      mcpPromptText: mcpPromptText || undefined,
+    return {
+      systemPrompt: systemPromptTokens,
+      formatPrompt: formatPromptTokens,
+      skills: skillsTokens,
+      messages: messageTokens,
+      messageGroups: effectiveGroups,
+      tools: 0,  // Future: tool definitions
+      mcp: mcpTokens,
+      actualUsage,
+      systemPromptText: userSystemPrompt || undefined,
+      formatPromptText: formatPromptText || undefined,
+      skillsSectionText: skillsSectionText || undefined,
+      skillsInjectedText: skillsInjectedText || undefined,
+      mcpPromptText: mcpPromptText || undefined,
       total: totalContextTokens,
       limit: contextLength,
       percentage: Math.min(percentage, 100),
@@ -1620,10 +1620,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
           console.error('Failed to process retry action', e);
         }
         break;
-	      case 'undo':
-	        if (sessionId && action.payload) {
-	          try {
-	            const parsed = JSON.parse(action.payload) as { messageId?: string; content?: string };
+      case 'undo':
+        if (sessionId && action.payload) {
+          try {
+            const parsed = JSON.parse(action.payload) as { messageId?: string; content?: string };
             const messageId = parsed.messageId;
             if (!messageId) return;
 
@@ -1632,30 +1632,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
             const resolvedUserMessage =
               targetIndex >= 0
                 ? (() => {
-                    const m = allMessages[targetIndex];
-                    if (m.role === 'user') return m;
-                    for (let i = targetIndex - 1; i >= 0; i--) {
-                      if (allMessages[i].role === 'user') return allMessages[i];
-                    }
-                    return undefined;
-                  })()
+                  const m = allMessages[targetIndex];
+                  if (m.role === 'user') return m;
+                  for (let i = targetIndex - 1; i >= 0; i--) {
+                    if (allMessages[i].role === 'user') return allMessages[i];
+                  }
+                  return undefined;
+                })()
                 : undefined;
 
-	            const contentToRestore = resolvedUserMessage?.content ?? parsed.content ?? '';
-	            const codeSnippetsToRestore =
-	              resolvedUserMessage?.contentParts?.filter(
-	                (p): p is CodeSnippetContentPart => p.type === 'code_snippet'
-	              ) ?? [];
-	            const partsToRestore =
-	              resolvedUserMessage?.contentParts?.filter((p) => p.type !== 'text' && p.type !== 'code_snippet') ?? [];
+            const contentToRestore = resolvedUserMessage?.content ?? parsed.content ?? '';
+            const codeSnippetsToRestore =
+              resolvedUserMessage?.contentParts?.filter(
+                (p): p is CodeSnippetContentPart => p.type === 'code_snippet'
+              ) ?? [];
+            const partsToRestore =
+              resolvedUserMessage?.contentParts?.filter((p) => p.type !== 'text' && p.type !== 'code_snippet') ?? [];
 
-	            undoToMessage(sessionId, messageId);
-	            setSessionDraftCodeSnippets(sessionId, codeSnippetsToRestore);
+            undoToMessage(sessionId, messageId);
+            setSessionDraftCodeSnippets(sessionId, codeSnippetsToRestore);
 
-	            if (inputRef.current) {
-	              inputRef.current.setValue(contentToRestore);
-	              inputRef.current.setContentParts(partsToRestore);
-	              inputRef.current.focus();
+            if (inputRef.current) {
+              inputRef.current.setValue(contentToRestore);
+              inputRef.current.setContentParts(partsToRestore);
+              inputRef.current.focus();
             }
           } catch (e) {
             console.error("Failed to process undo action", e);
@@ -1676,13 +1676,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }, [openUrl, retryMessage, sessionId, undoToMessage]);
 
-	  const handleAbortTool = useCallback(
-	    (_callId: string) => {
-	      if (!sessionId) return;
-	      abortGeneration(sessionId).catch(console.error);
-	    },
-	    [abortGeneration, sessionId]
-	  );
+  const handleAbortTool = useCallback(
+    (_callId: string) => {
+      if (!sessionId) return;
+      abortGeneration(sessionId).catch(console.error);
+    },
+    [abortGeneration, sessionId]
+  );
 
   const handleRetryTurn = useCallback(
     (assistantMessageId: string, turnId: string) => {
@@ -1888,23 +1888,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         <div className="flex min-w-0 flex-1 flex-col">
           {isExternalAgentSession && session && (
-            <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-3 text-xs dark:border-amber-900/40 dark:bg-amber-950/20">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300">
-                    <Terminal size={13} />
-                    <span>External Agent Session</span>
-                  </div>
-                  <div className="mt-1 truncate text-gray-700 dark:text-gray-200">
-                    {session.externalDisplayName || externalAgentForDisplay?.displayName || session.externalAgentName || session.agentName}
-                  </div>
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
-                    {session.externalTransport && <span className="rounded bg-white/80 px-1.5 py-0.5 dark:bg-gray-900/50">{session.externalTransport}</span>}
-                    {session.externalSessionMode && <span>sessionMode={session.externalSessionMode}</span>}
-                    {session.externalProviderSessionId && <span className="truncate">provider={session.externalProviderSessionId}</span>}
-                    {session.externalCwd && <span className="truncate">cwd={session.externalCwd}</span>}
-                    {session.externalClosed && <span className="text-red-500 dark:text-red-300">已关闭</span>}
-                  </div>
+            <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-2 text-xs dark:border-amber-900/40 dark:bg-amber-950/20">
+              <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
+                <div className="flex shrink-0 items-center gap-1 font-semibold text-amber-700 dark:text-amber-300">
+                  <Terminal size={13} />
+                  <span>External Agent Session:</span>
+                </div>
+                <div className="shrink-0 font-medium text-gray-700 dark:text-gray-200">
+                  {session.externalDisplayName || externalAgentForDisplay?.displayName || session.externalAgentName || session.agentName}
+                </div>
+                <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden text-[11px] text-gray-500 dark:text-gray-400">
+                  <span className="shrink-0 font-bold text-gray-300 dark:text-gray-600">·</span>
+                  {session.externalTransport && <span className="shrink-0 rounded bg-white/80 px-1.5 py-0.5 dark:bg-gray-900/50">{session.externalTransport}</span>}
+                  {session.externalSessionMode && <span className="shrink-0">mode={session.externalSessionMode}</span>}
+                  {session.externalProviderSessionId && <span className="truncate">id={session.externalProviderSessionId.split('-')[0]}..</span>}
+                  {session.externalCwd && <span className="truncate">cwd={session.externalCwd}</span>}
+                  {session.externalClosed && <span className="shrink-0 text-red-500 dark:text-red-300">已关闭</span>}
                 </div>
               </div>
             </div>
@@ -2121,15 +2120,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
         onCloneConversation={
           conversationId
             ? async () => {
-                if (!sessionId) return;
-                try {
-                  await cloneConversation(sessionId);
-                } catch (err) {
-                  const message = err instanceof Error ? err.message : String(err);
-                  console.error('cloneConversation failed:', err);
-                  alert(`克隆失败：${message}`);
-                }
+              if (!sessionId) return;
+              try {
+                await cloneConversation(sessionId);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('cloneConversation failed:', err);
+                alert(`克隆失败：${message}`);
               }
+            }
             : undefined
         }
         disabled={false}
@@ -2171,19 +2170,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
         })}
-		        webSearchDetails={webSearchDetails}
-		        workstudio={workstudio ?? null}
-		        workspaceMentions={session?.draftWorkspaceMentions ?? []}
-		        onWorkspaceMentionsChange={(mentions) => {
-		          if (!sessionId) return;
-		          setSessionDraftWorkspaceMentions(sessionId, mentions);
-		        }}
-		        codeSnippets={session?.draftCodeSnippets ?? []}
-		        onCodeSnippetsChange={(snips) => {
-		          if (!sessionId) return;
-		          setSessionDraftCodeSnippets(sessionId, snips);
-		        }}
-		      />
+        webSearchDetails={webSearchDetails}
+        workstudio={workstudio ?? null}
+        workspaceMentions={session?.draftWorkspaceMentions ?? []}
+        onWorkspaceMentionsChange={(mentions) => {
+          if (!sessionId) return;
+          setSessionDraftWorkspaceMentions(sessionId, mentions);
+        }}
+        codeSnippets={session?.draftCodeSnippets ?? []}
+        onCodeSnippetsChange={(snips) => {
+          if (!sessionId) return;
+          setSessionDraftCodeSnippets(sessionId, snips);
+        }}
+      />
       {persistanceShellEnhance && conversationId && (
         <ToolSessionsPanel
           conversationId={conversationId}

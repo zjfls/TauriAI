@@ -16,6 +16,7 @@ pub mod mentions;
 pub mod models;
 pub mod prompts;
 pub mod runtime;
+pub mod shell_env;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod skills;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -355,6 +356,8 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         open_settings_shortcut.as_deref(),
     )?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
+    let reset_main_window =
+        MenuItem::with_id(app, "reset_main_window", "重置主窗口", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
 
     let separator = PredefinedMenuItem::separator(app)?;
@@ -464,6 +467,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             &[
                 &open_practice,
                 &open_settings,
+                &reset_main_window,
                 &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,
@@ -480,6 +484,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             &[
                 &open_practice,
                 &open_settings,
+                &reset_main_window,
                 &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,
@@ -913,6 +918,10 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn run_desktop() {
+    // 在 Tokio runtime 启动之前（单线程阶段），合并 shell 登录环境的 PATH。
+    // 解决 macOS GUI 程序无法找到 Homebrew、npm global 等 CLI 工具的问题。
+    crate::shell_env::merge_shell_path_blocking();
+
     use crate::commands::*;
     use crate::runtime::RunState;
     use crate::skills::installer::install_bundled_skills;
@@ -965,6 +974,16 @@ fn run_desktop() {
                             app,
                             window.label(),
                             "menu:open_practice",
+                            (),
+                        );
+                    }
+                }
+                "reset_main_window" => {
+                    if app.get_webview_window("main").is_some() {
+                        emit_webview_window_event(
+                            app,
+                            "main",
+                            "app:reset_main_window",
                             (),
                         );
                     }

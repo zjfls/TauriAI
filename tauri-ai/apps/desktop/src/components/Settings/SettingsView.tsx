@@ -568,6 +568,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     );
   };
 
+
   const [sections, setSections] = useState({
     general: true,
     shortcuts: true,
@@ -650,6 +651,7 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${manualTurnRetry ? 'translate-x-5' : ''}`} />
           </button>
         </div>
+
       </SettingsSection>
 
       <SettingsSection

@@ -1146,8 +1146,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       if (gitBranchesFetchSeqRef.current !== seq) return;
       const normalized = Array.isArray(branches)
         ? branches
-            .map((b) => (typeof b === 'string' ? b.trim() : ''))
-            .filter((b) => b.length > 0)
+          .map((b) => (typeof b === 'string' ? b.trim() : ''))
+          .filter((b) => b.length > 0)
         : [];
       setGitBranches(normalized);
       setGitBranchesError(null);
@@ -2320,33 +2320,33 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
    * Requirements 3.1, 3.2, 3.3, 3.4: Text file content formatting and sending
    * Requirements 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7: PDF content formatting and sending
    */
-	  const handleSend = useCallback(async () => {
-	    // Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
-	    const hasAttachments =
-	      pendingImages.length > 0 ||
-	      pendingTextFiles.length > 0 ||
-	      pendingPdfs.length > 0 ||
-	      hasWorkspaceMentionTokens(content) ||
-	      hasCodeSnippetTokens(content) ||
-	      codeSnippets.length > 0;
-	    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled) {
-	      return;
-	    }
+  const handleSend = useCallback(async () => {
+    // Requirement 4.6: Don't send empty/whitespace-only input (unless there are attachments)
+    const hasAttachments =
+      pendingImages.length > 0 ||
+      pendingTextFiles.length > 0 ||
+      pendingPdfs.length > 0 ||
+      hasWorkspaceMentionTokens(content) ||
+      hasCodeSnippetTokens(content) ||
+      codeSnippets.length > 0;
+    if ((isWhitespaceOnly(content) && !hasAttachments) || disabled) {
+      return;
+    }
 
     const expandedContent = expandWorkspaceMentionTokens(content, workspaceMentions);
     const trimmedContent = expandedContent.trim();
     let nextFileError: string | null = null;
 
-	    // Build content parts for images, text files, and PDFs
-	    let contentParts: ContentPart[] | undefined;
+    // Build content parts for images, text files, and PDFs
+    let contentParts: ContentPart[] | undefined;
 
-	    if (
-	      pendingImages.length > 0 ||
-	      pendingTextFiles.length > 0 ||
-	      pendingPdfs.length > 0 ||
-	      codeSnippets.length > 0
-	    ) {
-	      contentParts = [];
+    if (
+      pendingImages.length > 0 ||
+      pendingTextFiles.length > 0 ||
+      pendingPdfs.length > 0 ||
+      codeSnippets.length > 0
+    ) {
+      contentParts = [];
 
       // Add image content parts
       for (const img of pendingImages) {
@@ -2368,34 +2368,34 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       }
 
       // Add PDF content parts (Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7)
-	      for (const pdf of pendingPdfs) {
-	        contentParts.push({
-	          type: 'pdf_document' as const,
-	          filename: pdf.filename,
-	          pages: pdf.pages,
-	          totalPages: pdf.totalPages,
-	          metadata: pdf.metadata,
-	        });
-	      }
+      for (const pdf of pendingPdfs) {
+        contentParts.push({
+          type: 'pdf_document' as const,
+          filename: pdf.filename,
+          pages: pdf.pages,
+          totalPages: pdf.totalPages,
+          metadata: pdf.metadata,
+        });
+      }
 
-	      // Add code snippet content parts (selection chips from Workstudio)
-	      if (codeSnippets.length > 0) {
-	        contentParts.push(...codeSnippets);
-	      }
-	    }
+      // Add code snippet content parts (selection chips from Workstudio)
+      if (codeSnippets.length > 0) {
+        contentParts.push(...codeSnippets);
+      }
+    }
 
-	    onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
-	    handleContentChange('');
+    onSend(trimmedContent, supportsThinking ? thinkingMode : undefined, contentParts);
+    handleContentChange('');
     setPendingImages([]);
     // Requirement 3.3: Clear pending text files after sending
     setPendingTextFiles([]);
-	    // Clear pending PDFs after sending
-	    setPendingPdfs([]);
-	    handleWorkspaceMentionsChange([]);
-	    onCodeSnippetsChange?.([]);
-	    setAtQuery(null);
-	    setAtResults([]);
-	    setAtIndex(0);
+    // Clear pending PDFs after sending
+    setPendingPdfs([]);
+    handleWorkspaceMentionsChange([]);
+    onCodeSnippetsChange?.([]);
+    setAtQuery(null);
+    setAtResults([]);
+    setAtIndex(0);
     setDollarQuery(null);
     setDollarResults([]);
     setDollarIndex(0);
@@ -2409,21 +2409,21 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
 
     // Refocus textarea after sending
     textareaRef.current?.focus();
-	  }, [
-	    content,
-	    pendingImages,
-	    pendingTextFiles,
-	    pendingPdfs,
-		    workspaceMentions,
-		    codeSnippets,
-		    disabled,
-		    onSend,
-		    supportsThinking,
-		    thinkingMode,
-		    handleContentChange,
-		    handleWorkspaceMentionsChange,
-		    onCodeSnippetsChange,
-		  ]);
+  }, [
+    content,
+    pendingImages,
+    pendingTextFiles,
+    pendingPdfs,
+    workspaceMentions,
+    codeSnippets,
+    disabled,
+    onSend,
+    supportsThinking,
+    thinkingMode,
+    handleContentChange,
+    handleWorkspaceMentionsChange,
+    onCodeSnippetsChange,
+  ]);
 
   /**
    * Handle keyboard events in textarea
@@ -2463,26 +2463,26 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           e.preventDefault();
           const chosen = atResults.length > 0 ? atResults[atIndex] : undefined;
           if (!chosen) return;
-	          const el = textareaRef.current;
-	          const cursor = el?.selectionStart ?? content.length;
-	          const existing = workspaceMentions.find((m) => m.absPath === chosen.absPath) ?? null;
-	          const refId = existing?.id ?? crypto.randomUUID();
-	          const token = `@{ref:${refId}}`;
-	          const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
-	          handleContentChange(nextContent);
-	          setAtQuery(null);
-	          setAtResults([]);
-	          setAtIndex(0);
-	          if (!existing) {
-	            handleWorkspaceMentionsChange([
-	              ...workspaceMentions,
-	              { id: refId, absPath: chosen.absPath, label: chosen.label },
-	            ]);
-	          }
-	          window.setTimeout(() => {
-	            const el2 = textareaRef.current;
-	            if (!el2) return;
-	            el2.focus();
+          const el = textareaRef.current;
+          const cursor = el?.selectionStart ?? content.length;
+          const existing = workspaceMentions.find((m) => m.absPath === chosen.absPath) ?? null;
+          const refId = existing?.id ?? crypto.randomUUID();
+          const token = `@{ref:${refId}}`;
+          const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
+          handleContentChange(nextContent);
+          setAtQuery(null);
+          setAtResults([]);
+          setAtIndex(0);
+          if (!existing) {
+            handleWorkspaceMentionsChange([
+              ...workspaceMentions,
+              { id: refId, absPath: chosen.absPath, label: chosen.label },
+            ]);
+          }
+          window.setTimeout(() => {
+            const el2 = textareaRef.current;
+            if (!el2) return;
+            el2.focus();
             const pos = atQuery.start + token.length + 1;
             try {
               el2.setSelectionRange(pos, pos);
@@ -2507,7 +2507,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           setDollarIndex((v) => Math.max(v - 1, 0));
           return;
         }
-      if (e.key === 'Escape') {
+        if (e.key === 'Escape') {
           e.preventDefault();
           setDollarQuery(null);
           setDollarResults([]);
@@ -2566,53 +2566,53 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       }
 
-	      if (e.key === 'Backspace' || e.key === 'Delete') {
-	        const el = textareaRef.current;
-	        if (el && el.selectionStart === el.selectionEnd) {
-	          const cursor = el.selectionStart ?? content.length;
-	          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
-	          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
-		          if (hit) {
-		            e.preventDefault();
-		            const next = content.slice(0, hit.start) + content.slice(hit.end);
-		            handleContentChange(next);
-		            const stillReferenced = next.includes(`@{ref:${hit.id}}`);
-		            if (!stillReferenced) {
-		              handleWorkspaceMentionsChange(workspaceMentions.filter((m) => m.id !== hit.id));
-		            }
-		            window.setTimeout(() => {
-		              const el2 = textareaRef.current;
-		              if (!el2) return;
-		              try {
-	                el2.setSelectionRange(hit.start, hit.start);
-	              } catch {
-	                // ignore
-	              }
-	            }, 0);
-	            return;
-	          }
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        const el = textareaRef.current;
+        if (el && el.selectionStart === el.selectionEnd) {
+          const cursor = el.selectionStart ?? content.length;
+          const probeIndex = e.key === 'Backspace' ? cursor - 1 : cursor;
+          const hit = findWorkspaceMentionTokenAt(content, probeIndex);
+          if (hit) {
+            e.preventDefault();
+            const next = content.slice(0, hit.start) + content.slice(hit.end);
+            handleContentChange(next);
+            const stillReferenced = next.includes(`@{ref:${hit.id}}`);
+            if (!stillReferenced) {
+              handleWorkspaceMentionsChange(workspaceMentions.filter((m) => m.id !== hit.id));
+            }
+            window.setTimeout(() => {
+              const el2 = textareaRef.current;
+              if (!el2) return;
+              try {
+                el2.setSelectionRange(hit.start, hit.start);
+              } catch {
+                // ignore
+              }
+            }, 0);
+            return;
+          }
 
-	          const snippetHit = findCodeSnippetTokenAt(content, probeIndex);
-	          if (snippetHit) {
-	            e.preventDefault();
-	            const next = content.slice(0, snippetHit.start) + content.slice(snippetHit.end);
-	            handleContentChange(next);
-	            if (onCodeSnippetsChange) {
-	              onCodeSnippetsChange(codeSnippets.filter((s) => s.id !== snippetHit.id));
-	            }
-	            window.setTimeout(() => {
-	              const el2 = textareaRef.current;
-	              if (!el2) return;
-	              try {
-	                el2.setSelectionRange(snippetHit.start, snippetHit.start);
-	              } catch {
-	                // ignore
-	              }
-	            }, 0);
-	            return;
-	          }
-	        }
-	      }
+          const snippetHit = findCodeSnippetTokenAt(content, probeIndex);
+          if (snippetHit) {
+            e.preventDefault();
+            const next = content.slice(0, snippetHit.start) + content.slice(snippetHit.end);
+            handleContentChange(next);
+            if (onCodeSnippetsChange) {
+              onCodeSnippetsChange(codeSnippets.filter((s) => s.id !== snippetHit.id));
+            }
+            window.setTimeout(() => {
+              const el2 = textareaRef.current;
+              if (!el2) return;
+              try {
+                el2.setSelectionRange(snippetHit.start, snippetHit.start);
+              } catch {
+                // ignore
+              }
+            }, 0);
+            return;
+          }
+        }
+      }
 
       if (e.key === 'Enter') {
         if (e.shiftKey) return;
@@ -2620,23 +2620,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         void handleSend();
       }
     },
-		    [
-		      workstudio?.id,
-		      atQuery,
-		      atResults,
-		      atIndex,
-		      dollarQuery,
-		      dollarResults,
-		      dollarIndex,
-		      content,
-		      workspaceMentions,
-		      handleWorkspaceMentionsChange,
-		      codeSnippets,
-		      onCodeSnippetsChange,
-		      handleContentChange,
-		      handleSend,
-		    ]
-		  );
+    [
+      workstudio?.id,
+      atQuery,
+      atResults,
+      atIndex,
+      dollarQuery,
+      dollarResults,
+      dollarIndex,
+      content,
+      workspaceMentions,
+      handleWorkspaceMentionsChange,
+      codeSnippets,
+      onCodeSnippetsChange,
+      handleContentChange,
+      handleSend,
+    ]
+  );
 
   /**
    * Handle input change in textarea
@@ -2667,17 +2667,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     setDollarQuery(nextAt ? null : findActiveDollarQuery(content, cursor));
   }, [content, workstudio?.id]);
 
-	  const workspaceMentionsById = useMemo(() => {
-	    return new Map(workspaceMentions.map((m) => [m.id, m]));
-	  }, [workspaceMentions]);
+  const workspaceMentionsById = useMemo(() => {
+    return new Map(workspaceMentions.map((m) => [m.id, m]));
+  }, [workspaceMentions]);
 
-	  const codeSnippetsById = useMemo(() => {
-	    return new Map(codeSnippets.map((s) => [s.id, s]));
-	  }, [codeSnippets]);
+  const codeSnippetsById = useMemo(() => {
+    return new Map(codeSnippets.map((s) => [s.id, s]));
+  }, [codeSnippets]);
 
-	  const textareaOverlayNodes = useMemo(() => {
-	    const text = content ?? '';
-	    if (!text) return null;
+  const textareaOverlayNodes = useMemo(() => {
+    const text = content ?? '';
+    if (!text) return null;
 
     const COMMON_ENV_VARS = new Set([
       'PATH',
@@ -2716,9 +2716,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     let i = 0;
     let lastTextStart = 0;
 
-	    while (i < text.length) {
-	      // Workspace mention token: @{ref:<uuid>}
-	      if (text.startsWith('@{ref:', i)) {
+    while (i < text.length) {
+      // Workspace mention token: @{ref:<uuid>}
+      if (text.startsWith('@{ref:', i)) {
         const m = text.slice(i).match(/^@\{ref:([0-9a-fA-F-]+)\}/);
         if (m) {
           const raw = m[0];
@@ -2755,62 +2755,62 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           lastTextStart = i;
           continue;
         }
-	      }
+      }
 
-	      // Code snippet token: @{snippet:<uuid>}
-	      if (text.startsWith('@{snippet:', i)) {
-	        const m = text.slice(i).match(/^@\{snippet:([0-9a-fA-F-]+)\}/);
-	        if (m) {
-	          const raw = m[0];
-	          const id = m[1];
-	          const start = i;
-	          const end = i + raw.length;
+      // Code snippet token: @{snippet:<uuid>}
+      if (text.startsWith('@{snippet:', i)) {
+        const m = text.slice(i).match(/^@\{snippet:([0-9a-fA-F-]+)\}/);
+        if (m) {
+          const raw = m[0];
+          const id = m[1];
+          const start = i;
+          const end = i + raw.length;
 
-	          flushText(lastTextStart, start);
-	          const snippet = codeSnippetsById.get(id);
-	          if (snippet) {
-	            const normalizedSnippetLabel = normalizeSnippetLineRangeLabel(
-	              snippet.label,
-	              snippet.range
-	            );
-	            const titleParts: string[] = [];
-	            if (snippet.filePath) titleParts.push(snippet.filePath);
-	            if (snippet.range) {
-	              titleParts.push(
-	                `${snippet.range.startLine}:${snippet.range.startColumn} - ${snippet.range.endLine}:${snippet.range.endColumn}`
-	              );
-	            }
-	            nodes.push(
-	              <span
-	                key={`snip-${id}-${start}`}
-	                className="relative align-baseline rounded-md bg-emerald-50 dark:bg-emerald-900/25"
-	              >
-                  <span className="text-transparent">{raw}</span>
-                  <span
-                    className="absolute inset-0 inline-flex items-center gap-1 px-2 text-xs text-emerald-700 dark:text-emerald-200 overflow-hidden whitespace-nowrap text-ellipsis pointer-events-none"
-                    title={titleParts.join('\n')}
-                  >
-                    {normalizedSnippetLabel}
-                  </span>
-	              </span>
-	            );
-	          } else {
-	            nodes.push(
-	              <span key={`snip-missing-${id}-${start}`} className="text-gray-400">
-	                {raw}
-	              </span>
-	            );
-	          }
+          flushText(lastTextStart, start);
+          const snippet = codeSnippetsById.get(id);
+          if (snippet) {
+            const normalizedSnippetLabel = normalizeSnippetLineRangeLabel(
+              snippet.label,
+              snippet.range
+            );
+            const titleParts: string[] = [];
+            if (snippet.filePath) titleParts.push(snippet.filePath);
+            if (snippet.range) {
+              titleParts.push(
+                `${snippet.range.startLine}:${snippet.range.startColumn} - ${snippet.range.endLine}:${snippet.range.endColumn}`
+              );
+            }
+            nodes.push(
+              <span
+                key={`snip-${id}-${start}`}
+                className="relative align-baseline rounded-md bg-emerald-50 dark:bg-emerald-900/25"
+              >
+                <span className="text-transparent">{raw}</span>
+                <span
+                  className="absolute inset-0 inline-flex items-center gap-1 px-2 text-xs text-emerald-700 dark:text-emerald-200 overflow-hidden whitespace-nowrap text-ellipsis pointer-events-none"
+                  title={titleParts.join('\n')}
+                >
+                  {normalizedSnippetLabel}
+                </span>
+              </span>
+            );
+          } else {
+            nodes.push(
+              <span key={`snip-missing-${id}-${start}`} className="text-gray-400">
+                {raw}
+              </span>
+            );
+          }
 
-	          i = end;
-	          lastTextStart = i;
-	          continue;
-	        }
-	      }
+          i = end;
+          lastTextStart = i;
+          continue;
+        }
+      }
 
-	      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
-	      // 仅高亮 `$name` 部分，但保留 raw token 占位，避免 caret 与 overlay 文本宽度不一致。
-	      if (text[i] === '[' && text[i + 1] === '$') {
+      // Linked mention: [${name}](mcp://...) / [${name}](app://...) / skill links
+      // 仅高亮 `$name` 部分，但保留 raw token 占位，避免 caret 与 overlay 文本宽度不一致。
+      if (text[i] === '[' && text[i + 1] === '$') {
         const nameStart = i + 2;
         let nameEnd = nameStart;
         while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
@@ -2826,7 +2826,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         }
       }
 
-	      // Plain $mention
+      // Plain $mention
       if (text[i] === '$') {
         const prev = i > 0 ? text[i - 1] : '';
         // Avoid highlighting in the middle of a larger token like `$foo_bar` when cursor is at `bar`.
@@ -2836,26 +2836,26 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           while (nameEnd < text.length && isDollarMentionChar(text[nameEnd]!)) nameEnd++;
           const name = text.slice(nameStart, nameEnd);
           // Avoid `$1` / `$0` etc (shell positional params) and common env vars.
-	          const hasLetter = /[a-zA-Z_]/.test(name);
-	          if (name && hasLetter && !isCommonEnvVar(name)) {
-	            flushText(lastTextStart, i);
-	            pushInlineMentionPlaceholder(`$-${i}`, text.slice(i, nameEnd));
-	            i = nameEnd;
-	            lastTextStart = i;
-	            continue;
-	          }
+          const hasLetter = /[a-zA-Z_]/.test(name);
+          if (name && hasLetter && !isCommonEnvVar(name)) {
+            flushText(lastTextStart, i);
+            pushInlineMentionPlaceholder(`$-${i}`, text.slice(i, nameEnd));
+            i = nameEnd;
+            lastTextStart = i;
+            continue;
+          }
         }
       }
 
       i += 1;
     }
 
-	    flushText(lastTextStart, text.length);
-      if (text.endsWith('\n')) {
-        nodes.push(<span key={`eof-${text.length}`}>{'\u200b'}</span>);
-      }
-	    return nodes;
-	  }, [content, workspaceMentionsById, codeSnippetsById]);
+    flushText(lastTextStart, text.length);
+    if (text.endsWith('\n')) {
+      nodes.push(<span key={`eof-${text.length}`}>{'\u200b'}</span>);
+    }
+    return nodes;
+  }, [content, workspaceMentionsById, codeSnippetsById]);
 
   const handleTextareaScroll = useCallback(() => {
     const el = textareaRef.current;
@@ -3002,7 +3002,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       .then((fn) => {
         unlisten = fn;
       })
-      .catch(() => {});
+      .catch(() => { });
 
     return () => {
       cancelled = true;
@@ -3027,8 +3027,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
     const enabledNames =
       setSkills.length === 0 && set.name === '标准skill集'
         ? skillOutcomeForMentions.skills
-            .map((s) => s.meta.name)
-            .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
+          .map((s) => s.meta.name)
+          .filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n))
         : setSkills.filter((n) => !disabledGlobal.has(n) && !disabledSet.has(n));
 
     return enabledNames.map((n) => byName.get(n)).filter(Boolean) as SkillEntry[];
@@ -3121,8 +3121,36 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const hasAgentSelector = agents.length > 0 && Boolean(currentAgentName);
   const hasModelSelector = modelOptions.length > 0 && Boolean(onModelSelect);
   const hasModeSelector = Boolean(onRunModeChange);
-  const hasBottomSelectors = hasAgentSelector || hasModeSelector || hasModelSelector;
-  const hasTopToolbar = Boolean(supportsThinking || supportsWebSearch || hasMcpSetBinding || contextUsage);
+  const hasBottomSelectors = hasModeSelector || hasModelSelector;
+  const agentControl = hasAgentSelector && currentAgentName
+    ? (
+      onAgentSelect ? (
+        <CompactSelector
+          icon={<Bot size={12} />}
+          options={agentOptions}
+          currentValue={currentAgentName}
+          onSelect={onAgentSelect}
+          disabled={isGenerating}
+          placeholder="智能体"
+        />
+      ) : (
+        <div
+          className={[
+            'flex items-center gap-1.5 rounded-lg border px-2 py-1',
+            'border-gray-200 bg-gray-50 text-gray-700 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200',
+          ].join(' ')}
+          title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
+        >
+          <Bot size={12} className="text-gray-500 dark:text-gray-400" />
+          <span className="max-w-32 truncate text-xs font-medium">
+            {currentAgent?.displayName || currentAgentName}
+            {currentAgent?.type ? ` (${currentAgent.type})` : ''}
+          </span>
+        </div>
+      )
+    )
+    : null;
+  const hasTopToolbar = Boolean(agentControl || supportsThinking || supportsWebSearch || hasMcpSetBinding || contextUsage);
 
   return (
     <div
@@ -3134,6 +3162,8 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
       {hasTopToolbar && (
         <div className="mb-2 flex items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-2">
+            {agentControl}
+
             {/* Thinking selector - adaptive based on API protocol */}
             {supportsThinking && (
               <ThinkingSelector
@@ -3278,17 +3308,17 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         <div className="relative flex-1">
           {workstudio?.id && atQuery && (
             <div className="absolute bottom-full mb-2 w-full rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
-	              <div className="max-h-56 overflow-auto py-1 text-sm">
-	                {atError ? (
-	                  <div className="px-3 py-2 text-xs text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
-	                    {atError}
-	                  </div>
-	                ) : atResults.length === 0 ? (
-	                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-	                    {atQuery.query.trim()
-	                      ? '未找到匹配文件'
-	                      : '继续输入文件名以搜索（例如 @README 或 @src/app）'}
-	                  </div>
+              <div className="max-h-56 overflow-auto py-1 text-sm">
+                {atError ? (
+                  <div className="px-3 py-2 text-xs text-red-600 dark:text-red-300 whitespace-pre-wrap break-words">
+                    {atError}
+                  </div>
+                ) : atResults.length === 0 ? (
+                  <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
+                    {atQuery.query.trim()
+                      ? '未找到匹配文件'
+                      : '继续输入文件名以搜索（例如 @README 或 @src/app）'}
+                  </div>
                 ) : (
                   atResults.map((r, idx) => (
                     <button
@@ -3301,27 +3331,27 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                           : 'hover:bg-gray-50 dark:hover:bg-gray-700',
                       ].join(' ')}
                       onMouseDown={(ev) => ev.preventDefault()}
-	                      onClick={() => {
-	                        const el = textareaRef.current;
-	                        const cursor = el?.selectionStart ?? content.length;
-	                        const existing = workspaceMentions.find((m) => m.absPath === r.absPath) ?? null;
-	                        const refId = existing?.id ?? crypto.randomUUID();
-	                        const token = `@{ref:${refId}}`;
-	                        const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
-	                        handleContentChange(nextContent);
-	                        setAtQuery(null);
-	                        setAtResults([]);
-	                        setAtIndex(0);
-	                        if (!existing) {
-	                          handleWorkspaceMentionsChange([
-	                            ...workspaceMentions,
-	                            { id: refId, absPath: r.absPath, label: r.label },
-	                          ]);
-	                        }
-	                        window.setTimeout(() => {
-	                          const el2 = textareaRef.current;
-	                          if (!el2) return;
-	                          el2.focus();
+                      onClick={() => {
+                        const el = textareaRef.current;
+                        const cursor = el?.selectionStart ?? content.length;
+                        const existing = workspaceMentions.find((m) => m.absPath === r.absPath) ?? null;
+                        const refId = existing?.id ?? crypto.randomUUID();
+                        const token = `@{ref:${refId}}`;
+                        const nextContent = content.slice(0, atQuery.start) + token + ' ' + content.slice(cursor);
+                        handleContentChange(nextContent);
+                        setAtQuery(null);
+                        setAtResults([]);
+                        setAtIndex(0);
+                        if (!existing) {
+                          handleWorkspaceMentionsChange([
+                            ...workspaceMentions,
+                            { id: refId, absPath: r.absPath, label: r.label },
+                          ]);
+                        }
+                        window.setTimeout(() => {
+                          const el2 = textareaRef.current;
+                          if (!el2) return;
+                          el2.focus();
                           const pos = atQuery.start + token.length + 1;
                           try {
                             el2.setSelectionRange(pos, pos);
@@ -3485,79 +3515,58 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
         </div>
       </div>
 
-      {hasBottomSelectors && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {/* Agent selector */}
-          {hasAgentSelector && currentAgentName && (
-            onAgentSelect ? (
-              <CompactSelector
-                icon={<Bot size={12} />}
-                options={agentOptions}
-                currentValue={currentAgentName}
-                onSelect={onAgentSelect}
-                disabled={isGenerating}
-                placeholder="智能体"
-              />
-            ) : (
-              <div
-                className={[
-                  'flex items-center gap-1.5 px-2 py-1 rounded-lg border',
-                  'bg-gray-50 dark:bg-gray-900 border-gray-200 dark:border-gray-700',
-                  'text-gray-700 dark:text-gray-200',
-                ].join(' ')}
-                title={currentAgent?.type ? `${currentAgent.displayName} (${currentAgent.type})` : (currentAgent?.displayName || currentAgentName)}
-              >
-                <Bot size={12} className="text-gray-500 dark:text-gray-400" />
-                <span className="text-xs font-medium max-w-32 truncate">
-                  {currentAgent?.displayName || currentAgentName}
-                  {currentAgent?.type ? ` (${currentAgent.type})` : ''}
-                </span>
+      {/* Bottom actions row: Attachments + Selectors + Git */}
+      <div className="mt-2 flex min-w-0 items-center gap-3 text-xs">
+        <div className="flex min-w-0 flex-1 items-center gap-3 overflow-x-auto pb-1">
+          <div className="flex shrink-0 items-center gap-3">
+            <AttachmentMenu
+              onImageClick={() => fileInputRef.current?.click()}
+              onTextFileClick={() => textFileInputRef.current?.click()}
+              onPdfClick={() => pdfFileInputRef.current?.click()}
+              supportsVision={supportsVision}
+              disabled={disabled || isGenerating}
+            />
+            <ExtraActionsMenu
+              onCloneConversation={onCloneConversation}
+              cloneConversationShortcutLabel={cloneConversationShortcutLabel}
+              disabled={disabled || isGenerating}
+            />
+          </div>
+
+          {hasBottomSelectors && (
+            <>
+              <div className="h-3 w-px shrink-0 bg-gray-200 dark:bg-gray-700" />
+              <div className="flex shrink-0 items-center gap-2">
+                {/* Run mode selector */}
+                {hasModeSelector && (
+                  <CompactSelector
+                    icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
+                    options={RUN_MODE_OPTIONS}
+                    currentValue={runMode}
+                    onSelect={(value) => onRunModeChange?.(value as RunMode)}
+                    disabled={disabled}
+                    placeholder="模式"
+                  />
+                )}
+
+                {/* Model selector */}
+                {hasModelSelector && onModelSelect && (
+                  <CompactSelector
+                    icon={<Cpu size={12} />}
+                    options={modelOptions}
+                    currentValue={currentModelRef}
+                    onSelect={onModelSelect}
+                    disabled={isGenerating}
+                    placeholder="模型"
+                  />
+                )}
               </div>
-            )
-          )}
-
-          {/* Run mode selector */}
-          {hasModeSelector && (
-            <CompactSelector
-              icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
-              options={RUN_MODE_OPTIONS}
-              currentValue={runMode}
-              onSelect={(value) => onRunModeChange?.(value as RunMode)}
-              disabled={disabled}
-              placeholder="模式"
-            />
-          )}
-
-          {/* Model selector */}
-          {hasModelSelector && onModelSelect && (
-            <CompactSelector
-              icon={<Cpu size={12} />}
-              options={modelOptions}
-              currentValue={currentModelRef}
-              onSelect={onModelSelect}
-              disabled={isGenerating}
-              placeholder="模型"
-            />
+            </>
           )}
         </div>
-      )}
 
-      {/* Attachment menu + extra actions */}
-      <div className="mt-1 flex items-center gap-3 text-xs">
-        <AttachmentMenu
-          onImageClick={() => fileInputRef.current?.click()}
-          onTextFileClick={() => textFileInputRef.current?.click()}
-          onPdfClick={() => pdfFileInputRef.current?.click()}
-          supportsVision={supportsVision}
-          disabled={disabled || isGenerating}
-        />
-        <ExtraActionsMenu
-          onCloneConversation={onCloneConversation}
-          cloneConversationShortcutLabel={cloneConversationShortcutLabel}
-          disabled={disabled || isGenerating}
-        />
         {gitBranch && (
-          <div className="ml-auto relative" ref={gitBranchMenuRef}>
+          <div className="relative shrink-0" ref={gitBranchMenuRef}>
             <button
               type="button"
               onClick={() => setIsGitBranchMenuOpen((v) => !v)}
