@@ -17,7 +17,6 @@ use std::sync::Arc;
 #[cfg(target_os = "android")]
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
-#[cfg(target_os = "android")]
 use tauri::Manager;
 #[cfg(not(target_os = "android"))]
 use tokio::fs;
