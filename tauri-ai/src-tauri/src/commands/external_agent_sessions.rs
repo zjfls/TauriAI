@@ -1,29 +1,30 @@
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::models::ContentPart;
 use crate::runtime::tools::handlers::external_agent::{
-    close_external_agent_session_direct, conversation_session_scope,
-    get_external_agent_session_detail, list_external_agent_sessions,
-    send_external_agent_session_direct, standalone_session_scope,
-    start_external_agent_session_direct, DirectAgentSessionSendRequest,
-    DirectAgentSessionStartRequest, ExternalAgentSessionCommandResult, ExternalAgentSessionDetail,
-    ExternalAgentSessionScope, ExternalAgentSessionScopeKind, ExternalAgentSessionSummary,
+    close_external_agent_session_direct, send_external_agent_session_direct,
+    standalone_session_scope, start_external_agent_session_direct, DirectAgentSessionSendRequest,
+    DirectAgentSessionStartRequest, ExternalAgentSessionCommandResult, ExternalAgentSessionScope,
+    ExternalAgentSessionScopeKind, ExternalAgentSessionSummary,
 };
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentSessionScopeInput {
+pub struct ExternalAgentSessionScopeInput {
     kind: ExternalAgentSessionScopeKind,
     id: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StartAgentSessionInput {
+pub struct StartExternalAgentSessionInput {
     #[serde(default)]
-    scope: Option<AgentSessionScopeInput>,
+    scope: Option<ExternalAgentSessionScopeInput>,
     agent_name: String,
-    prompt: String,
+    content: String,
+    #[serde(default)]
+    content_parts: Vec<ContentPart>,
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
@@ -40,9 +41,11 @@ pub struct StartAgentSessionInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SendAgentSessionInput {
+pub struct SendExternalAgentSessionInput {
     session_id: String,
-    prompt: String,
+    content: String,
+    #[serde(default)]
+    content_parts: Vec<ContentPart>,
     #[serde(default)]
     model_ref: Option<String>,
     #[serde(default)]
@@ -55,33 +58,16 @@ pub struct SendAgentSessionInput {
     cwd: Option<String>,
 }
 
-fn into_scope(input: AgentSessionScopeInput) -> ExternalAgentSessionScope {
-    match input.kind {
-        ExternalAgentSessionScopeKind::Conversation => conversation_session_scope(&input.id),
-        kind => ExternalAgentSessionScope { kind, id: input.id },
+fn into_scope(input: ExternalAgentSessionScopeInput) -> ExternalAgentSessionScope {
+    ExternalAgentSessionScope {
+        kind: input.kind,
+        id: input.id,
     }
 }
 
 #[tauri::command]
-pub async fn list_agent_sessions(
-    scope: Option<AgentSessionScopeInput>,
-) -> Result<Vec<ExternalAgentSessionSummary>, String> {
-    let resolved_scope = scope.map(into_scope);
-    list_external_agent_sessions(resolved_scope.as_ref()).map_err(|error| error.message)
-}
-
-#[tauri::command]
-pub async fn get_agent_session_detail(
-    session_id: String,
-) -> Result<ExternalAgentSessionDetail, String> {
-    get_external_agent_session_detail(&session_id)
-        .await
-        .map_err(|error| error.message)
-}
-
-#[tauri::command]
-pub async fn start_agent_session(
-    request: StartAgentSessionInput,
+pub async fn start_external_agent_session(
+    request: StartExternalAgentSessionInput,
 ) -> Result<ExternalAgentSessionCommandResult, String> {
     start_external_agent_session_direct(DirectAgentSessionStartRequest {
         scope: request
@@ -89,7 +75,8 @@ pub async fn start_agent_session(
             .map(into_scope)
             .unwrap_or_else(standalone_session_scope),
         agent_name: request.agent_name,
-        prompt: request.prompt,
+        content: request.content,
+        content_parts: request.content_parts,
         title: request.title,
         model_ref: request.model_ref,
         run_mode: request.run_mode,
@@ -102,12 +89,13 @@ pub async fn start_agent_session(
 }
 
 #[tauri::command]
-pub async fn send_agent_session_message(
-    request: SendAgentSessionInput,
+pub async fn send_external_agent_session(
+    request: SendExternalAgentSessionInput,
 ) -> Result<ExternalAgentSessionCommandResult, String> {
     send_external_agent_session_direct(DirectAgentSessionSendRequest {
         session_id: request.session_id,
-        prompt: request.prompt,
+        content: request.content,
+        content_parts: request.content_parts,
         model_ref: request.model_ref,
         run_mode: request.run_mode,
         thinking: request.thinking,
@@ -119,10 +107,10 @@ pub async fn send_agent_session_message(
 }
 
 #[tauri::command]
-pub async fn close_agent_session(
+pub async fn close_external_agent_session(
     session_id: String,
     delete_session_db: Option<bool>,
-) -> Result<ExternalAgentSessionDetail, String> {
+) -> Result<ExternalAgentSessionSummary, String> {
     close_external_agent_session_direct(&session_id, delete_session_db.unwrap_or(false))
         .await
         .map_err(|error| error.message)

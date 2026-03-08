@@ -967,10 +967,20 @@ fn render_subagent_call_tool_prompt(config: &crate::models::AppConfig) -> String
             let task_usage = agent.task_usage.as_deref().unwrap_or("").trim();
             let summary =
                 summarize_agent_usage_line(agent.display_name.trim(), description, task_usage);
+            let session_mode = if matches!(
+                agent.transport.transport_type,
+                crate::models::ExternalAgentTransportType::Headless
+                    | crate::models::ExternalAgentTransportType::ClaudeCode
+            ) {
+                "native"
+            } else {
+                "replay"
+            };
             lines.push(format!(
-                "- `target=external:{}`：transport=`{}`；{}",
+                "- `target=external:{}`：transport=`{}`；sessionMode=`{}`；{}",
                 agent.name.trim(),
                 agent.transport.transport_type.as_str(),
+                session_mode,
                 summary
             ));
         }
@@ -1007,10 +1017,20 @@ fn render_agent_session_tool_prompt(config: &crate::models::AppConfig) -> String
             let task_usage = agent.task_usage.as_deref().unwrap_or("").trim();
             let summary =
                 summarize_agent_usage_line(agent.display_name.trim(), description, task_usage);
+            let session_mode = if matches!(
+                agent.transport.transport_type,
+                crate::models::ExternalAgentTransportType::Headless
+                    | crate::models::ExternalAgentTransportType::ClaudeCode
+            ) {
+                "native"
+            } else {
+                "replay"
+            };
             lines.push(format!(
-                "- `target=external:{}`：transport=`{}`；{}",
+                "- `target=external:{}`：transport=`{}`；sessionMode=`{}`；{}",
                 agent.name.trim(),
                 agent.transport.transport_type.as_str(),
+                session_mode,
                 summary
             ));
         }

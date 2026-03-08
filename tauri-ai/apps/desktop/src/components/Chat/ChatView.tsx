@@ -9,7 +9,7 @@ import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
-import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink, Bot } from 'lucide-react';
+import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink, Terminal } from 'lucide-react';
 import {
   clearSessionStreamViewerVisibility,
   setSessionStreamViewerVisibility,
@@ -21,7 +21,6 @@ import { useWorkstudioChatWithStore } from '../../stores/workstudioChatWithStore
 import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
-import { AgentSessionsPanel } from './AgentSessionsPanel';
 import { estimateTokens } from '../../utils/tokenizer';
 import { getApiProtocol } from '../../utils/apiUtils';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -35,7 +34,6 @@ import type {
   PtySessionInfo,
   Workstudio,
   Agent,
-  AgentSessionSummary,
   SkillMetadata,
   SkillLoadOutcome,
   SandboxPolicy,
@@ -44,7 +42,6 @@ import type {
   MessageBlock,
 } from '../../types';
 import { useToolSessionStore } from '../../stores/toolSessionStore';
-import { useAgentSessionStore } from '../../stores/agentSessionStore';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../../utils/chatOpenProfile';
 import { openOrFocusWorkstudioWindow } from '../../utils/viewWindow';
 import { openWorkstudioFileInWorkspace } from '../../utils/workstudioOpenFile';
@@ -61,7 +58,6 @@ interface ChatViewProps {
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
-const EMPTY_AGENT_SESSIONS: AgentSessionSummary[] = [];
 const CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY = 'tauri-ai:chat:outline-display-mode:v1';
 
 function loadChatOutlineDisplayMode(): ChatOutlineDisplayMode {
@@ -132,7 +128,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 				    }))
 			  );
   const [showToolSessions, setShowToolSessions] = useState(false);
-  const [showAgentSessions, setShowAgentSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
   const [outlineDisplayMode, setOutlineDisplayMode] = useState<ChatOutlineDisplayMode>(() => loadChatOutlineDisplayMode());
@@ -195,6 +190,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
+  const isExternalAgentSession = session?.sessionKind === 'external_agent';
   const ensureChatWithThreadForConversation = useWorkstudioChatWithStore((state) => state.ensureThreadForConversation);
   const chatWithThread = useWorkstudioChatWithStore((state) => {
     if (!conversationId) return null;
@@ -358,11 +354,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     });
   }, [sessionId, conversationId]);
 
-  const { config, getProvider, getAgent, getModelOptions } = useConfigStore(
+  const { config, getProvider, getAgent, getExternalAgent, getModelOptions } = useConfigStore(
     useShallow((state) => ({
       config: state.config,
       getProvider: state.getProvider,
       getAgent: state.getAgent,
+      getExternalAgent: state.getExternalAgent,
       getModelOptions: state.getModelOptions,
     }))
   );
@@ -621,10 +618,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const showUsage = config?.general?.showUsage ?? true;
 
   const refreshToolSessions = useToolSessionStore((state) => state.refreshSessions);
-  const refreshAgentSessions = useAgentSessionStore((state) => state.refreshSessions);
-  const agentSessions = useAgentSessionStore((state) =>
-    conversationId ? state.sessionsByScopeKey[`conversation:${conversationId}`] ?? EMPTY_AGENT_SESSIONS : EMPTY_AGENT_SESSIONS
-  );
   const toolSessions = useToolSessionStore(
     (state) =>
       conversationId
@@ -638,7 +631,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     return filtered.length > 0 ? filtered : EMPTY_PTY_SESSIONS;
   }, [toolSessions, persistanceShellEnhance]);
   const activeToolCount = persistentToolSessions.filter((s) => s.isAlive).length;
-  const activeAgentSessionCount = agentSessions.filter((s) => s.status !== 'closed').length;
 
   const workspaceEnabled = useMemo(() => {
     if (!agentName) return false;
@@ -667,6 +659,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (!agentName) return null;
     return getAgent(agentName) ?? null;
   }, [agentName, getAgent]);
+
+  const externalAgentForDisplay = useMemo(() => {
+    if (!isExternalAgentSession || !agentName) return null;
+    return getExternalAgent(session?.externalAgentName || agentName) ?? null;
+  }, [agentName, getExternalAgent, isExternalAgentSession, session?.externalAgentName]);
 
   // Determine if export should be shown based on format type (richtext)
   const canExportChat = useMemo(() => {
@@ -1059,10 +1056,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
     if (persistanceShellEnhance && (conversationChanged || generationFinished || enhanceJustEnabled)) {
       refreshToolSessions(conversationId);
     }
-    if (conversationChanged || generationFinished) {
-      void refreshAgentSessions({ kind: 'conversation', id: conversationId });
-    }
-  }, [conversationId, isGenerating, refreshAgentSessions, refreshToolSessions, persistanceShellEnhance]);
+  }, [conversationId, isGenerating, refreshToolSessions, persistanceShellEnhance]);
 
   // 系统级提示词统一以 `src-tauri/src/prompts.rs` 为准；前端需要时通过 Tauri command 获取，避免两份数据漂移。
 
@@ -1719,20 +1713,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
                 </span>
               </button>
             )}
-            {conversationId && (
-              <button
-                type="button"
-                onClick={() => setShowAgentSessions(true)}
-                className="flex items-center gap-2 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                title="查看当前对话的子 Agent 工作台"
-              >
-                <Bot size={14} />
-                <span>子 Agent</span>
-                <span className="rounded-full bg-gray-200 px-1.5 text-[10px] text-gray-700 dark:bg-gray-700 dark:text-gray-200">
-                  {activeAgentSessionCount}
-                </span>
-              </button>
-            )}
 
             <div className="flex min-w-0 items-center gap-1">
               {workspaceEnabled && (
@@ -1884,6 +1864,28 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         ) : null}
 
         <div className="flex min-w-0 flex-1 flex-col">
+          {isExternalAgentSession && session && (
+            <div className="border-b border-amber-100 bg-amber-50/80 px-4 py-3 text-xs dark:border-amber-900/40 dark:bg-amber-950/20">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1 font-semibold text-amber-700 dark:text-amber-300">
+                    <Terminal size={13} />
+                    <span>External Agent Session</span>
+                  </div>
+                  <div className="mt-1 truncate text-gray-700 dark:text-gray-200">
+                    {session.externalDisplayName || externalAgentForDisplay?.displayName || session.externalAgentName || session.agentName}
+                  </div>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                    {session.externalTransport && <span className="rounded bg-white/80 px-1.5 py-0.5 dark:bg-gray-900/50">{session.externalTransport}</span>}
+                    {session.externalSessionMode && <span>sessionMode={session.externalSessionMode}</span>}
+                    {session.externalProviderSessionId && <span className="truncate">provider={session.externalProviderSessionId}</span>}
+                    {session.externalCwd && <span className="truncate">cwd={session.externalCwd}</span>}
+                    {session.externalClosed && <span className="text-red-500 dark:text-red-300">已关闭</span>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
           {chatWithScope && (
             <div className="border-b border-blue-100 bg-blue-50/70 px-4 py-3 text-xs dark:border-blue-900/40 dark:bg-blue-950/30">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2092,7 +2094,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       <InputArea
         ref={inputRef}
         onSend={handleSend}
-        onAbort={handleAbort}
+        onAbort={isExternalAgentSession ? undefined : handleAbort}
         onCloneConversation={
           conversationId
             ? async () => {
@@ -2110,16 +2112,16 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         disabled={false}
         isGenerating={isGenerating}
         queuedCount={queuedMessages.length}
-        runMode={session?.runMode ?? 'chat'}
-        onRunModeChange={(mode) => {
+        runMode={isExternalAgentSession ? undefined : (session?.runMode ?? 'chat')}
+        onRunModeChange={isExternalAgentSession ? undefined : ((mode) => {
           if (!sessionId) return;
           setSessionRunMode(sessionId, mode);
-        }}
-        agents={currentAgentForDisplay ? [currentAgentForDisplay] : []}
-        currentAgentName={currentAgentForDisplay?.name || session?.agentName || ''}
-        supportsThinking={supportsThinking}
-        supportsVision={supportsVision}
-        contextUsage={contextUsage}
+        })}
+        agents={!isExternalAgentSession && currentAgentForDisplay ? [currentAgentForDisplay] : []}
+        currentAgentName={!isExternalAgentSession ? (currentAgentForDisplay?.name || session?.agentName || '') : ''}
+        supportsThinking={isExternalAgentSession ? false : supportsThinking}
+        supportsVision={isExternalAgentSession ? false : supportsVision}
+        contextUsage={isExternalAgentSession ? null : contextUsage}
         apiProtocol={apiProtocol}
         providerType={currentProviderType}
         value={draftContent}
@@ -2127,26 +2129,25 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
           if (!sessionId) return;
           setSessionDraftContent(sessionId, value);
         }}
-        thinkingMode={thinkingMode}
-        onThinkingModeChange={(value) => {
+        thinkingMode={isExternalAgentSession ? undefined : thinkingMode}
+        onThinkingModeChange={isExternalAgentSession ? undefined : ((value) => {
           if (!sessionId) return;
           setSessionThinkingMode(sessionId, value);
-        }}
+        })}
         useReasoningEffort={useReasoningEffort}
-        modelOptions={getModelOptions()}
-        currentModelRef={session?.modelRef || ''}
-        onModelSelect={(modelRef) => {
+        modelOptions={isExternalAgentSession ? [] : getModelOptions()}
+        currentModelRef={isExternalAgentSession ? '' : (session?.modelRef || '')}
+        onModelSelect={isExternalAgentSession ? undefined : ((modelRef) => {
           if (!sessionId) return;
-          // 模型切换已支持跨协议适配：不再弹窗阻断，失败时仅在控制台记录。
           setSessionModel(sessionId, modelRef).catch(console.error);
-        }}
-        supportsWebSearch={supportsWebSearch}
-        availableProviders={availableWebSearchProviders}
-        selectedProvider={session?.webSearchProvider}
-        onProviderSelect={(provider) => {
+        })}
+        supportsWebSearch={isExternalAgentSession ? false : supportsWebSearch}
+        availableProviders={isExternalAgentSession ? [] : availableWebSearchProviders}
+        selectedProvider={isExternalAgentSession ? null : session?.webSearchProvider}
+        onProviderSelect={isExternalAgentSession ? undefined : ((provider) => {
           if (!sessionId) return;
           useSessionStore.getState().setSessionWebSearchProvider(sessionId, provider);
-        }}
+        })}
 		        webSearchDetails={webSearchDetails}
 		        workstudio={workstudio ?? null}
 		        workspaceMentions={session?.draftWorkspaceMentions ?? []}
@@ -2165,13 +2166,6 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
           conversationId={conversationId}
           isOpen={showToolSessions}
           onClose={() => setShowToolSessions(false)}
-        />
-      )}
-      {conversationId && (
-        <AgentSessionsPanel
-          conversationId={conversationId}
-          isOpen={showAgentSessions}
-          onClose={() => setShowAgentSessions(false)}
         />
       )}
     </div>

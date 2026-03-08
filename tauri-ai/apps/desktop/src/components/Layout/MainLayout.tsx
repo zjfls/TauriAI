@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { WorkspaceTabBar } from '../Workspace/WorkspaceTabBar';
+import { WorkspaceTabBar, type SessionCreateRequest } from '../Workspace/WorkspaceTabBar';
 import { useUIStore } from '../../stores/uiStore';
 import { useConfigStore } from '../../stores/configStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -21,6 +21,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const { setActiveView } = useUIStore();
   const {
     config,
+    getEnabledExternalAgents,
   } = useConfigStore();
 
   // Session store for multi-agent workspace
@@ -30,6 +31,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const switchSession = useSessionStore((state) => state.switchSession);
   const closeSession = useSessionStore((state) => state.closeSession);
   const createSession = useSessionStore((state) => state.createSession);
+  const createExternalSession = useSessionStore((state) => state.createExternalSession);
 
   // Handle session tab click - switch to session
   const handleTabClick = (sessionId: string) => {
@@ -55,17 +57,21 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   };
 
   // Handle new session creation
-  const handleNewSession = async (agentName: string) => {
+  const handleNewSession = async (request: SessionCreateRequest) => {
     try {
-      await createSession(agentName);
+      if (request.kind === 'agent') {
+        await createSession(request.agentName);
+      } else {
+        await createExternalSession(request.externalAgentName);
+      }
       setActiveView('chat');
     } catch (error) {
       console.error('Failed to create session:', error);
     }
   };
 
-  // Get agents for session creation dropdown
   const agents = filterNonPracticeAgents(config?.agents || []);
+  const externalAgents = React.useMemo(() => getEnabledExternalAgents(), [getEnabledExternalAgents, config]);
 
   const handlePopoutSession = async (sessionId: string) => {
     const session = sessions.find((s) => s.id === sessionId);
@@ -87,6 +93,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         <WorkspaceTabBar
           sessions={sessions}
           agents={agents}
+          externalAgents={externalAgents}
           onTabClick={handleTabClick}
           onTabClose={handleTabClose}
           onNewSession={handleNewSession}

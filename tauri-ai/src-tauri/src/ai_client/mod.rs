@@ -15,7 +15,9 @@ mod traits;
 mod utf8_stream;
 
 pub use anthropic::AnthropicClient;
-pub use content_converter::{content_part_to_blocks, parse_data_url, ContentBlock};
+pub use content_converter::{
+    content_part_to_blocks, content_parts_to_blocks_with_limit, parse_data_url, ContentBlock,
+};
 pub use factory::{get_client, Provider};
 pub use google::GoogleClient;
 pub use ollama::OllamaClient;

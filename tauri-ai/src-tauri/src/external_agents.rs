@@ -6,6 +6,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tokio::process::Command;
 
 use crate::models::{
@@ -144,12 +145,12 @@ const KNOWN_EXTERNAL_AGENTS: [KnownExternalAgentSpec; 3] = [
     KnownExternalAgentSpec {
         name: "claude_code",
         display_name: "Claude Code",
-        description: "调用本机 Claude Code CLI，适合一次性委托或回放式子会话。",
+        description: "调用本机 Claude Code CLI，适合一次性委托或原生持久会话。",
         program_name: "claude",
         transport_type: ExternalAgentTransportType::ClaudeCode,
         supports_run: true,
         supports_session: true,
-        session_mode: ExternalAgentSessionMode::Replay,
+        session_mode: ExternalAgentSessionMode::Native,
     },
 ];
 
@@ -520,6 +521,350 @@ fn trimmed_output_text(text: &str) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClaudeCodeJson {
+    System {
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
+    Assistant {
+        message: ClaudeCodeMessage,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        uuid: Option<String>,
+    },
+    User {
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        uuid: Option<String>,
+    },
+    ToolUse {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    ToolResult {
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    StreamEvent {
+        event: ClaudeCodeStreamEvent,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        uuid: Option<String>,
+    },
+    Result {
+        #[serde(default, alias = "sessionId")]
+        session_id: Option<String>,
+        #[serde(default)]
+        usage: Option<ClaudeCodeUsage>,
+    },
+    #[serde(untagged)]
+    Unknown {
+        #[serde(flatten)]
+        data: HashMap<String, Value>,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeCodeMessage {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+    content: ClaudeCodeMessageContent,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ClaudeCodeMessageContent {
+    Array(Vec<ClaudeCodeContentItem>),
+    Text(String),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ClaudeCodeContentItem {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ClaudeCodeStreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart { message: ClaudeCodeMessage },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta { delta: ClaudeCodeContentBlockDelta },
+    #[serde(rename = "message_delta")]
+    MessageDelta {
+        #[serde(default)]
+        usage: Option<ClaudeCodeUsage>,
+    },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type")]
+enum ClaudeCodeContentBlockDelta {
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ClaudeCodeUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default, rename = "cache_creation_input_tokens")]
+    cache_creation_input_tokens: Option<u64>,
+    #[serde(default, rename = "cache_read_input_tokens")]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    service_tier: Option<String>,
+}
+
+#[derive(Debug)]
+struct ClaudeCodeParsedOutput {
+    content: String,
+    thinking: Option<String>,
+    model: Option<String>,
+    usage: Option<Value>,
+    session_id: Option<String>,
+    message_id: Option<String>,
+}
+
+fn merge_optional_string(target: &mut Option<String>, candidate: Option<String>) {
+    if target.is_none() {
+        *target = candidate.filter(|value| !value.trim().is_empty());
+    }
+}
+
+fn append_nonempty(target: &mut String, value: &str) {
+    if !value.is_empty() {
+        target.push_str(value);
+    }
+}
+
+fn claude_message_text(content: &ClaudeCodeMessageContent) -> Option<String> {
+    match content {
+        ClaudeCodeMessageContent::Text(text) => trimmed_output_text(text),
+        ClaudeCodeMessageContent::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| match item {
+                    ClaudeCodeContentItem::Text { text } => Some(text.as_str()),
+                    ClaudeCodeContentItem::Thinking { .. } | ClaudeCodeContentItem::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            trimmed_output_text(&text)
+        }
+    }
+}
+
+fn claude_message_thinking(content: &ClaudeCodeMessageContent) -> Option<String> {
+    match content {
+        ClaudeCodeMessageContent::Text(_) => None,
+        ClaudeCodeMessageContent::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| match item {
+                    ClaudeCodeContentItem::Thinking { thinking } => Some(thinking.as_str()),
+                    ClaudeCodeContentItem::Text { .. } | ClaudeCodeContentItem::Unknown => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            trimmed_output_text(&text)
+        }
+    }
+}
+
+fn claude_usage_to_json(usage: &ClaudeCodeUsage) -> Option<Value> {
+    let cache_creation_input_tokens = usage.cache_creation_input_tokens.unwrap_or(0);
+    let cache_read_input_tokens = usage.cache_read_input_tokens.unwrap_or(0);
+    let prompt_tokens = usage
+        .input_tokens
+        .unwrap_or(0)
+        .saturating_add(cache_creation_input_tokens)
+        .saturating_add(cache_read_input_tokens);
+    let completion_tokens = usage.output_tokens.unwrap_or(0);
+    let total_tokens = prompt_tokens.saturating_add(completion_tokens);
+    if prompt_tokens == 0
+        && completion_tokens == 0
+        && cache_creation_input_tokens == 0
+        && cache_read_input_tokens == 0
+    {
+        return None;
+    }
+    let mut usage_value = json!({
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "totalTokens": total_tokens,
+        "cacheCreationInputTokens": cache_creation_input_tokens,
+        "cacheReadInputTokens": cache_read_input_tokens,
+    });
+    if let Some(service_tier) = usage.service_tier.as_ref() {
+        if let Some(map) = usage_value.as_object_mut() {
+            map.insert(
+                "serviceTier".to_string(),
+                Value::String(service_tier.clone()),
+            );
+        }
+    }
+    Some(usage_value)
+}
+
+fn parse_claude_stream_json_output(
+    stdout_text: &str,
+) -> Result<Option<ClaudeCodeParsedOutput>, String> {
+    let mut parsed_line_count = 0usize;
+    let mut assistant_text = None::<String>;
+    let mut assistant_thinking = None::<String>;
+    let mut stream_text = String::new();
+    let mut stream_thinking = String::new();
+    let mut session_id = None::<String>;
+    let mut message_id = None::<String>;
+    let mut model = None::<String>;
+    let mut usage = None::<Value>;
+
+    for raw_line in stdout_text.lines() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed = match serde_json::from_str::<ClaudeCodeJson>(trimmed) {
+            Ok(parsed) => parsed,
+            Err(_) => continue,
+        };
+        parsed_line_count = parsed_line_count.saturating_add(1);
+        match parsed {
+            ClaudeCodeJson::System {
+                session_id: line_session_id,
+                model: line_model,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+                merge_optional_string(&mut model, line_model);
+            }
+            ClaudeCodeJson::Assistant {
+                message,
+                session_id: line_session_id,
+                uuid,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+                merge_optional_string(&mut message_id, uuid.or_else(|| message.id.clone()));
+                merge_optional_string(&mut model, message.model.clone());
+                merge_optional_string(&mut assistant_text, claude_message_text(&message.content));
+                merge_optional_string(
+                    &mut assistant_thinking,
+                    claude_message_thinking(&message.content),
+                );
+            }
+            ClaudeCodeJson::User {
+                session_id: line_session_id,
+                uuid,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+                merge_optional_string(&mut message_id, uuid);
+            }
+            ClaudeCodeJson::ToolUse {
+                session_id: line_session_id,
+            }
+            | ClaudeCodeJson::ToolResult {
+                session_id: line_session_id,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+            }
+            ClaudeCodeJson::StreamEvent {
+                event,
+                session_id: line_session_id,
+                uuid,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+                merge_optional_string(&mut message_id, uuid);
+                match event {
+                    ClaudeCodeStreamEvent::MessageStart { message } => {
+                        merge_optional_string(&mut message_id, message.id.clone());
+                        merge_optional_string(&mut model, message.model.clone());
+                        merge_optional_string(
+                            &mut assistant_text,
+                            claude_message_text(&message.content),
+                        );
+                        merge_optional_string(
+                            &mut assistant_thinking,
+                            claude_message_thinking(&message.content),
+                        );
+                    }
+                    ClaudeCodeStreamEvent::ContentBlockDelta { delta } => match delta {
+                        ClaudeCodeContentBlockDelta::TextDelta { text } => {
+                            append_nonempty(&mut stream_text, &text);
+                        }
+                        ClaudeCodeContentBlockDelta::ThinkingDelta { thinking } => {
+                            append_nonempty(&mut stream_thinking, &thinking);
+                        }
+                        ClaudeCodeContentBlockDelta::Unknown => {}
+                    },
+                    ClaudeCodeStreamEvent::MessageDelta { usage: line_usage } => {
+                        if let Some(line_usage) = line_usage.as_ref() {
+                            usage = claude_usage_to_json(line_usage).or(usage);
+                        }
+                    }
+                    ClaudeCodeStreamEvent::Unknown => {}
+                }
+            }
+            ClaudeCodeJson::Result {
+                session_id: line_session_id,
+                usage: line_usage,
+            } => {
+                merge_optional_string(&mut session_id, line_session_id);
+                if let Some(line_usage) = line_usage.as_ref() {
+                    usage = claude_usage_to_json(line_usage).or(usage);
+                }
+            }
+            ClaudeCodeJson::Unknown { data } => {
+                if let Some(line_session_id) = data.get("session_id").and_then(Value::as_str) {
+                    merge_optional_string(&mut session_id, Some(line_session_id.to_string()));
+                }
+                if let Some(line_message_id) = data.get("uuid").and_then(Value::as_str) {
+                    merge_optional_string(&mut message_id, Some(line_message_id.to_string()));
+                }
+            }
+        }
+    }
+
+    if parsed_line_count == 0 {
+        return Ok(None);
+    }
+
+    let content = assistant_text
+        .or_else(|| trimmed_output_text(&stream_text))
+        .ok_or_else(|| "Claude stream-json 解析成功，但没有提取到 assistant 文本".to_string())?;
+    let thinking = assistant_thinking.or_else(|| trimmed_output_text(&stream_thinking));
+    Ok(Some(ClaudeCodeParsedOutput {
+        content,
+        thinking,
+        model,
+        usage,
+        session_id,
+        message_id,
+    }))
+}
+
 async fn invoke_codex_cli(
     tool_name: &str,
     external_agent: &ExternalAgentConfig,
@@ -620,14 +965,20 @@ async fn invoke_claude_code(
     parent_conversation_id: &str,
     session_id: Option<&str>,
     action: Option<&str>,
+    resume_session_id: Option<&str>,
 ) -> Result<ExternalAgentInvocationOutput, ToolError> {
     let (binary, binary_display) = resolve_command_path(external_agent)?;
     let mut command = Command::new(&binary);
     command.arg("-p");
-    command.arg("--output-format");
-    command.arg("text");
+    command.arg("--verbose");
+    command.arg("--output-format=stream-json");
+    command.arg("--include-partial-messages");
     command.arg("--permission-mode");
     command.arg("auto");
+    if let Some(resume_session_id) = normalize_optional_string(resume_session_id) {
+        command.arg("--resume");
+        command.arg(resume_session_id);
+    }
     if let Some(model_ref) = normalize_optional_string(model_ref) {
         command.arg("--model");
         command.arg(model_ref);
@@ -659,16 +1010,59 @@ async fn invoke_claude_code(
 
     if !output.status.success() {
         return Err(ToolError::new(format!(
-            "{tool_name} 调用 claude 失败（exit_code={}）\nstdout_tail:\n{}\nstderr_tail:\n{}",
+            "{tool_name} 调用 claude 失败（exit_code={}）
+stdout_tail:
+{}
+stderr_tail:
+{}",
             output.status.code().unwrap_or(-1),
             stdout_tail,
             stderr_tail
         )));
     }
 
+    let parsed_output = parse_claude_stream_json_output(&stdout_text).map_err(|err| {
+        ToolError::new(format!(
+            "{tool_name} 调用 claude 成功，但解析 stream-json 失败: {err}
+stdout_tail:
+{}
+stderr_tail:
+{}",
+            stdout_tail, stderr_tail
+        ))
+    })?;
+
+    if let Some(parsed_output) = parsed_output {
+        return Ok(ExternalAgentInvocationOutput {
+            content: parsed_output.content,
+            thinking: parsed_output.thinking,
+            model: parsed_output
+                .model
+                .or_else(|| normalize_optional_string(model_ref)),
+            usage: parsed_output.usage,
+            session_ref: parsed_output.session_id.map(|conversation_id| {
+                let mut session_ref = json!({
+                    "conversationId": conversation_id,
+                });
+                if let Some(message_id) = parsed_output.message_id {
+                    if let Some(map) = session_ref.as_object_mut() {
+                        map.insert("messageId".to_string(), Value::String(message_id));
+                    }
+                }
+                session_ref
+            }),
+            binary_display,
+            exit_code: output.status.code(),
+        });
+    }
+
     let content = trimmed_output_text(&stdout_text).ok_or_else(|| {
         ToolError::new(format!(
-            "{tool_name} 调用 claude 成功，但没有拿到输出\nstdout_tail:\n{}\nstderr_tail:\n{}",
+            "{tool_name} 调用 claude 成功，但没有拿到输出
+stdout_tail:
+{}
+stderr_tail:
+{}",
             stdout_tail, stderr_tail
         ))
     })?;
@@ -694,6 +1088,7 @@ pub(crate) async fn invoke_cli_transport(
     parent_conversation_id: &str,
     session_id: Option<&str>,
     action: Option<&str>,
+    resume_session_id: Option<&str>,
 ) -> Result<ExternalAgentInvocationOutput, ToolError> {
     match external_agent.transport.transport_type {
         ExternalAgentTransportType::Headless => Err(ToolError::internal(format!(
@@ -724,6 +1119,7 @@ pub(crate) async fn invoke_cli_transport(
                 parent_conversation_id,
                 session_id,
                 action,
+                resume_session_id,
             )
             .await
         }
@@ -770,5 +1166,65 @@ impl ExternalAgentTransportType {
             Self::CodexCli => "codex_cli",
             Self::ClaudeCode => "claude_code",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_claude_stream_json_output;
+
+    #[test]
+    fn parse_claude_stream_json_extracts_stream_deltas() {
+        let stdout = r#"
+{"type":"system","session_id":"sess_123","model":"claude-sonnet-4-5"}
+{"type":"stream_event","session_id":"sess_123","uuid":"msg_1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}
+{"type":"stream_event","session_id":"sess_123","uuid":"msg_1","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}}
+{"type":"stream_event","session_id":"sess_123","uuid":"msg_1","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"reasoning"}}}
+{"type":"result","sessionId":"sess_123","usage":{"input_tokens":12,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}
+"#;
+
+        let parsed = parse_claude_stream_json_output(stdout)
+            .expect("parse should succeed")
+            .expect("should detect stream-json output");
+
+        assert_eq!(parsed.content, "Hello world");
+        assert_eq!(parsed.thinking.as_deref(), Some("reasoning"));
+        assert_eq!(parsed.model.as_deref(), Some("claude-sonnet-4-5"));
+        assert_eq!(parsed.session_id.as_deref(), Some("sess_123"));
+        assert_eq!(parsed.message_id.as_deref(), Some("msg_1"));
+        assert_eq!(
+            parsed
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.get("totalTokens"))
+                .and_then(serde_json::Value::as_u64),
+            Some(24)
+        );
+    }
+
+    #[test]
+    fn parse_claude_stream_json_prefers_final_assistant_message() {
+        let stdout = r#"
+{"type":"assistant","session_id":"sess_final","uuid":"msg_final","message":{"id":"assistant_msg_1","model":"claude-opus-4-6","content":[{"type":"thinking","thinking":"plan"},{"type":"text","text":"Final answer"}]}}
+{"type":"result","sessionId":"sess_final","usage":{"input_tokens":20,"output_tokens":8}}
+"#;
+
+        let parsed = parse_claude_stream_json_output(stdout)
+            .expect("parse should succeed")
+            .expect("should detect assistant output");
+
+        assert_eq!(parsed.content, "Final answer");
+        assert_eq!(parsed.thinking.as_deref(), Some("plan"));
+        assert_eq!(parsed.model.as_deref(), Some("claude-opus-4-6"));
+        assert_eq!(parsed.session_id.as_deref(), Some("sess_final"));
+        assert_eq!(parsed.message_id.as_deref(), Some("msg_final"));
+        assert_eq!(
+            parsed
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.get("promptTokens"))
+                .and_then(serde_json::Value::as_u64),
+            Some(20)
+        );
     }
 }

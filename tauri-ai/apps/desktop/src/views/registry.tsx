@@ -1,10 +1,9 @@
 import React from 'react';
-import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal, Braces, Bot } from 'lucide-react';
+import { MessageSquare, History, Settings, FileText, LayoutPanelLeft, ExternalLink, Globe, Terminal, Braces } from 'lucide-react';
 import type { ActiveView } from '../types';
 import { ChatViewContainer } from './ChatViewContainer';
 import { HistoryPanel } from '../components/History/HistoryPanel';
 import { SettingsView } from '../components/Settings/SettingsView';
-import { AgentSessionsView } from '../components/AgentSessions/AgentSessionsView';
 import { DocumentView } from '../components/Documents/DocumentView';
 import { JsonAnalyzerView } from '../components/Json/JsonAnalyzerView';
 import { WorkstudioView } from '../components/Workstudio/WorkstudioView';
@@ -46,14 +45,6 @@ export const VIEW_DEFINITIONS: ViewDefinition[] = [
     title: '设置',
     icon: <Settings size={20} />,
     render: () => <SettingsView />,
-    inSidebar: true,
-  },
-  {
-    id: 'agent_sessions',
-    label: '子 Agent',
-    title: '子 Agent 工作台',
-    icon: <Bot size={20} />,
-    render: () => <AgentSessionsView />,
     inSidebar: true,
   },
   {

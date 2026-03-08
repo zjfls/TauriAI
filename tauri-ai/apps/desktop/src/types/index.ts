@@ -36,7 +36,6 @@ export type ActiveView =
   | 'history'
   | 'practice'
   | 'settings'
-  | 'agent_sessions'
   | 'document'
   | 'json_analyzer'
   | 'workstudio'
@@ -1300,7 +1299,6 @@ export interface WebSearchToolSettings {
 // ============================================================================
 
 export type KeyboardShortcutActionId =
-  | 'app.openAgentWorkspace'
   | 'app.openSettings'
   | 'app.openHistory'
   | 'app.openDevtools'
@@ -1405,59 +1403,45 @@ export interface ExternalAgentProbeInfo {
   suggestedConfig: ExternalAgentConfig;
 }
 
-export type AgentSessionScopeKind = 'conversation' | 'standalone' | 'workspace' | 'schedule';
 
-export interface AgentSessionScope {
-  kind: AgentSessionScopeKind;
-  id: string;
-}
+export type ExternalAgentSessionScopeKind = 'conversation' | 'standalone' | 'workspace' | 'schedule';
 
-export interface AgentSessionSummary {
+export interface ExternalAgentSessionSummary {
   sessionId: string;
   agentName: string;
-  displayName?: string | null;
+  displayName?: string;
   remoteAgentName: string;
   transport: string;
   sessionMode: string;
   title: string;
   status: string;
-  scopeKind: AgentSessionScopeKind;
+  scopeKind: ExternalAgentSessionScopeKind;
   scopeId: string;
   createdAt: string;
   updatedAt: string;
   childConversationId: string;
-  dbPath?: string | null;
-  modelRef?: string | null;
-  runMode?: string | null;
-  cwd?: string | null;
-  lastResultPreview?: string | null;
-  lastError?: string | null;
+  providerSessionId?: string;
+  providerMessageId?: string;
+  dbPath?: string;
+  modelRef?: string;
+  runMode?: string;
+  cwd?: string;
+  lastResultPreview?: string;
+  lastError?: string;
 }
 
-export interface AgentSessionTranscriptEntry {
-  id: string;
-  role: string;
+export interface ExternalAgentSessionCommandResult {
+  session: ExternalAgentSessionSummary;
   content: string;
-  thinking?: string | null;
-  createdAt?: string | null;
-  status?: string | null;
-}
-
-export interface AgentSessionDetail {
-  summary: AgentSessionSummary;
-  messages: AgentSessionTranscriptEntry[];
-  transcriptError?: string | null;
-}
-
-export interface AgentSessionCommandResult {
-  detail: AgentSessionDetail;
-  content: string;
-  thinking?: string | null;
-  model?: string | null;
-  usage?: unknown;
+  thinking?: string;
+  model?: string;
+  usage?: Record<string, unknown> | null;
   binary: string;
   exitCode?: number | null;
+  degradedToReplay: boolean;
 }
+
+export type SessionKind = 'chat' | 'external_agent';
 
 // ============================================================================
 // Code Intelligence (LSP / AST)
@@ -1901,6 +1885,16 @@ export interface QueuedSessionMessage {
 export interface AgentSession {
   id: string;                         // Unique session identifier (UUID)
   agentName: string;                  // Name of the agent being used
+  sessionKind?: SessionKind;          // chat | external_agent
+  externalAgentName?: string;         // External agent config name (when sessionKind=external_agent)
+  externalDisplayName?: string;       // External agent display name
+  externalTransport?: ExternalAgentTransportType;
+  externalSessionId?: string | null;
+  externalSessionMode?: ExternalAgentSessionMode | null;
+  externalProviderSessionId?: string | null;
+  externalProviderMessageId?: string | null;
+  externalCwd?: string | null;
+  externalClosed?: boolean;
   title: string;                      // Conversation title for display in tab
   modelRef?: string;                  // Current model reference (can override agent default)
   conversationId: string | null;      // Associated conversation ID
@@ -1955,6 +1949,17 @@ export interface AgentSession {
 export interface PersistedSession {
   id: string;
   agentName: string;
+  sessionKind?: SessionKind;
+  externalAgentName?: string;
+  externalDisplayName?: string;
+  externalTransport?: ExternalAgentTransportType;
+  externalSessionId?: string | null;
+  externalSessionMode?: ExternalAgentSessionMode | null;
+  externalProviderSessionId?: string | null;
+  externalProviderMessageId?: string | null;
+  externalCwd?: string | null;
+  externalClosed?: boolean;
+  title?: string;
   modelRef?: string;
   conversationId: string | null;
   workstudioId?: string | null;
@@ -1967,6 +1972,7 @@ export interface PersistedSession {
   draftWorkspaceMentions?: WorkspaceMentionChip[];
   /** 持久化草稿里的代码片段 chip（可能较大；存储层会做限制） */
   draftCodeSnippets?: CodeSnippetContentPart[];
+  messages?: Message[];
   createdAt: string;
   lastActiveAt: string;
 }

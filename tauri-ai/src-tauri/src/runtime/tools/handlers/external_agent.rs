@@ -3,7 +3,6 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -12,18 +11,22 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::Mutex;
 
 use crate::agents::chat::resolve_chat_model;
 use crate::ai_client::ToolCall;
+use crate::ai_client::{content_parts_to_blocks_with_limit, ContentBlock};
 use crate::config::ConfigManager;
 use crate::external_agents::{
-    build_replay_prompt, default_command_candidates, invoke_cli_transport,
-    ExternalAgentInvocationOutput, ExternalAgentReplayMessage, ExternalAgentReplayRole,
+    default_command_candidates, ExternalAgentInvocationOutput, ExternalAgentReplayMessage,
+    ExternalAgentReplayRole,
 };
 use crate::models::{
-    AppConfig, AskForApproval, ExternalAgentConfig, ExternalAgentTransportType, MessageRole,
+    AppConfig, AskForApproval, ContentPart, ExternalAgentConfig, ExternalAgentTransportType,
     SandboxPolicy,
+};
+use crate::runtime::external_agent_session_runtime::{
+    run_external_agent_session_runtime, ExternalAgentProviderSessionRef,
+    ExternalAgentSessionRuntimeKind, ExternalAgentSessionRuntimeRequest,
 };
 use crate::runtime::tools::permissions::ToolPermission;
 use crate::runtime::tools::registry::{
@@ -33,8 +36,6 @@ use crate::runtime::tools::sandbox::{
     dedupe_paths, effective_workspace_roots, is_path_under_any_root, normalize_root_for_join,
 };
 use crate::runtime::tools::spec::ToolSpec;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use crate::storage::{async_db, Database};
 
 const EXTERNAL_ONCE_TOOL_LABEL: &str = "subagent_call(external)";
 pub const AGENT_SESSION_TOOL_NAME: &str = "agent_session";
@@ -44,7 +45,7 @@ const STDOUT_TAIL_LIMIT: usize = 24;
 const DEFAULT_RUNTIME_TIMEOUT_MS: u64 = 120_000;
 const WAIT_TIMEOUT_BUFFER_MS: u64 = 8_000;
 const SESSION_PREVIEW_LIMIT: usize = 240;
-const SESSION_STORE_VERSION: u32 = 2;
+const SESSION_STORE_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +161,8 @@ pub struct ExternalAgentSessionSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub child_conversation_id: String,
+    pub provider_session_id: Option<String>,
+    pub provider_message_id: Option<String>,
     pub db_path: Option<String>,
     pub model_ref: Option<String>,
     pub run_mode: Option<String>,
@@ -170,33 +173,15 @@ pub struct ExternalAgentSessionSummary {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ExternalAgentSessionTranscriptEntry {
-    pub id: String,
-    pub role: String,
-    pub content: String,
-    pub thinking: Option<String>,
-    pub created_at: Option<DateTime<Utc>>,
-    pub status: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExternalAgentSessionDetail {
-    pub summary: ExternalAgentSessionSummary,
-    pub messages: Vec<ExternalAgentSessionTranscriptEntry>,
-    pub transcript_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExternalAgentSessionCommandResult {
-    pub detail: ExternalAgentSessionDetail,
+    pub session: ExternalAgentSessionSummary,
     pub content: String,
     pub thinking: Option<String>,
     pub model: Option<String>,
     pub usage: Option<Value>,
     pub binary: String,
     pub exit_code: Option<i32>,
+    pub degraded_to_replay: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,7 +201,13 @@ struct ExternalAgentSessionRecord {
     updated_at: DateTime<Utc>,
     #[serde(default)]
     transport_type: ExternalAgentTransportType,
+    #[serde(default = "default_external_agent_session_mode")]
+    session_mode: crate::external_agents::ExternalAgentSessionMode,
     child_conversation_id: String,
+    #[serde(default)]
+    provider_session_id: Option<String>,
+    #[serde(default)]
+    provider_message_id: Option<String>,
     db_path: Option<String>,
     model_ref: Option<String>,
     run_mode: Option<String>,
@@ -245,6 +236,10 @@ fn default_session_scope_kind() -> ExternalAgentSessionScopeKind {
     ExternalAgentSessionScopeKind::Conversation
 }
 
+fn default_external_agent_session_mode() -> crate::external_agents::ExternalAgentSessionMode {
+    crate::external_agents::ExternalAgentSessionMode::Replay
+}
+
 pub(crate) fn conversation_session_scope(conversation_id: &str) -> ExternalAgentSessionScope {
     ExternalAgentSessionScope {
         kind: ExternalAgentSessionScopeKind::Conversation,
@@ -263,7 +258,8 @@ pub(crate) fn standalone_session_scope() -> ExternalAgentSessionScope {
 pub(crate) struct DirectAgentSessionStartRequest {
     pub scope: ExternalAgentSessionScope,
     pub agent_name: String,
-    pub prompt: String,
+    pub content: String,
+    pub content_parts: Vec<ContentPart>,
     pub title: Option<String>,
     pub model_ref: Option<String>,
     pub run_mode: Option<String>,
@@ -275,7 +271,8 @@ pub(crate) struct DirectAgentSessionStartRequest {
 #[derive(Debug, Clone)]
 pub(crate) struct DirectAgentSessionSendRequest {
     pub session_id: String,
-    pub prompt: String,
+    pub content: String,
+    pub content_parts: Vec<ContentPart>,
     pub model_ref: Option<String>,
     pub run_mode: Option<String>,
     pub thinking: Option<Value>,
@@ -322,6 +319,27 @@ fn normalize_session_store(store: &mut ExternalAgentSessionStore) {
     store.version = SESSION_STORE_VERSION;
     for session in &mut store.sessions {
         session.normalize_scope();
+        session.session_mode = match session.transport_type {
+            ExternalAgentTransportType::Headless => {
+                crate::external_agents::ExternalAgentSessionMode::Native
+            }
+            ExternalAgentTransportType::ClaudeCode => {
+                if session.provider_session_id.is_some() {
+                    crate::external_agents::ExternalAgentSessionMode::Native
+                } else {
+                    crate::external_agents::ExternalAgentSessionMode::Replay
+                }
+            }
+            ExternalAgentTransportType::CodexCli => {
+                crate::external_agents::ExternalAgentSessionMode::Replay
+            }
+        };
+        if session.child_conversation_id.trim().is_empty() {
+            session.child_conversation_id = session
+                .provider_session_id
+                .clone()
+                .unwrap_or_else(|| session.id.clone());
+        }
     }
 }
 
@@ -616,17 +634,6 @@ fn save_session_store(store: &ExternalAgentSessionStore) -> Result<(), ToolError
             path.display()
         ))
     })
-}
-
-fn resolve_unrestricted_workdir(
-    requested_cwd: Option<&str>,
-    fallback_cwd: Option<&str>,
-    transport_cwd: Option<&PathBuf>,
-) -> Option<PathBuf> {
-    normalize_optional_string(requested_cwd)
-        .or_else(|| normalize_optional_string(fallback_cwd))
-        .map(PathBuf::from)
-        .or_else(|| transport_cwd.cloned())
 }
 
 fn resolve_effective_workdir(
@@ -954,11 +961,12 @@ fn preview_text(content: &str) -> Option<String> {
     Some(out)
 }
 
-fn session_mode_for_transport(transport_type: ExternalAgentTransportType) -> &'static str {
-    if transport_type == ExternalAgentTransportType::Headless {
-        "native"
-    } else {
-        "replay"
+fn session_mode_label(
+    session_mode: crate::external_agents::ExternalAgentSessionMode,
+) -> &'static str {
+    match session_mode {
+        crate::external_agents::ExternalAgentSessionMode::Native => "native",
+        crate::external_agents::ExternalAgentSessionMode::Replay => "replay",
     }
 }
 
@@ -966,15 +974,6 @@ fn session_status_label(status: ExternalAgentSessionStatus) -> &'static str {
     match status {
         ExternalAgentSessionStatus::Active => "active",
         ExternalAgentSessionStatus::Closed => "closed",
-    }
-}
-
-fn message_role_label(role: &MessageRole) -> &'static str {
-    match role {
-        MessageRole::User => "user",
-        MessageRole::Assistant => "assistant",
-        MessageRole::System => "system",
-        MessageRole::Tool => "tool",
     }
 }
 
@@ -989,7 +988,7 @@ fn session_summary(
         display_name: display_name.map(ToOwned::to_owned),
         remote_agent_name: record.remote_agent_name.clone(),
         transport: record.transport_type.as_str().to_string(),
-        session_mode: session_mode_for_transport(record.transport_type).to_string(),
+        session_mode: session_mode_label(record.session_mode).to_string(),
         title: record.title.clone(),
         status: session_status_label(record.status).to_string(),
         scope_kind: scope.kind,
@@ -997,6 +996,8 @@ fn session_summary(
         created_at: record.created_at,
         updated_at: record.updated_at,
         child_conversation_id: record.child_conversation_id.clone(),
+        provider_session_id: record.provider_session_id.clone(),
+        provider_message_id: record.provider_message_id.clone(),
         db_path: record.db_path.clone(),
         model_ref: record.model_ref.clone(),
         run_mode: record.run_mode.clone(),
@@ -1011,131 +1012,67 @@ fn session_summary_value(record: &ExternalAgentSessionRecord, display_name: Opti
         .unwrap_or_else(|_| Value::Object(Map::new()))
 }
 
-pub(crate) fn list_external_agent_sessions(
-    scope: Option<&ExternalAgentSessionScope>,
-) -> Result<Vec<ExternalAgentSessionSummary>, ToolError> {
-    let config = load_app_config()?;
-    let mut store = load_session_store()?;
-    normalize_session_store(&mut store);
-    let mut sessions = store.sessions.iter().collect::<Vec<_>>();
-    if let Some(scope) = scope {
-        sessions.retain(|session| session.matches_scope(scope));
+fn parent_conversation_id_for_scope(scope: &ExternalAgentSessionScope) -> &str {
+    if scope.kind == ExternalAgentSessionScopeKind::Conversation {
+        scope.id.as_str()
+    } else {
+        ""
     }
-    sessions.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    Ok(sessions
+}
+
+fn resolve_unrestricted_workdir(
+    requested_cwd: Option<&str>,
+    fallback_cwd: Option<&str>,
+    transport_cwd: Option<&PathBuf>,
+) -> Option<PathBuf> {
+    normalize_optional_string(requested_cwd)
+        .map(PathBuf::from)
+        .or_else(|| normalize_optional_string(fallback_cwd).map(PathBuf::from))
+        .or_else(|| transport_cwd.cloned())
+}
+
+fn build_direct_prompt(content: &str, content_parts: &[ContentPart]) -> Result<String, ToolError> {
+    let mut parts =
+        Vec::with_capacity(content_parts.len() + usize::from(!content.trim().is_empty()));
+    if !content.trim().is_empty() {
+        parts.push(ContentPart::text(content.to_string()));
+    }
+    parts.extend(content_parts.iter().cloned());
+
+    if parts.is_empty() {
+        return Err(ToolError::invalid("external agent 消息不能为空"));
+    }
+
+    let omitted_image_count = parts
+        .iter()
+        .filter(|part| matches!(part, ContentPart::Image { .. }))
+        .count();
+    let (blocks, _) = content_parts_to_blocks_with_limit(&parts, false, None);
+    let mut sections = blocks
         .into_iter()
-        .map(|session| {
-            let display_name = config
-                .get_external_agent(&session.agent_name)
-                .map(|agent| agent.display_name.as_str());
-            session_summary(session, display_name)
-        })
-        .collect())
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-async fn load_session_transcript_entries(
-    record: &ExternalAgentSessionRecord,
-) -> Result<Vec<ExternalAgentSessionTranscriptEntry>, ToolError> {
-    if record.transport_type == ExternalAgentTransportType::Headless {
-        let db_path = record.db_path.clone().ok_or_else(|| {
-            ToolError::new(format!("agent_session 会话缺少 dbPath：{}", record.id))
-        })?;
-        let db = Database::new(PathBuf::from(&db_path)).map_err(|e| {
-            ToolError::new(format!(
-                "打开 external agent session DB 失败（{db_path}）: {e}"
-            ))
-        })?;
-        let db = Arc::new(Mutex::new(db));
-        let messages = async_db::read_all_messages(
-            &db,
-            "external_agent:load_session_transcript_entries",
-            &record.child_conversation_id,
-        )
-        .await
-        .map_err(|e| {
-            ToolError::new(format!(
-                "读取 external agent session transcript 失败（{}）: {e}",
-                record.child_conversation_id
-            ))
-        })?;
-        return Ok(messages
-            .into_iter()
-            .map(|message| ExternalAgentSessionTranscriptEntry {
-                id: message.id,
-                role: message_role_label(&message.role).to_string(),
-                content: message.content,
-                thinking: message.thinking,
-                created_at: Some(message.created_at),
-                status: Some(
-                    match message.status {
-                        crate::models::MessageStatus::Pending => "pending",
-                        crate::models::MessageStatus::Success => "success",
-                        crate::models::MessageStatus::Failed => "failed",
-                    }
-                    .to_string(),
-                ),
-            })
-            .collect());
-    }
-
-    Ok(record
-        .replay_messages
-        .iter()
-        .enumerate()
-        .map(|(index, message)| ExternalAgentSessionTranscriptEntry {
-            id: format!("{}:{index}", record.id),
-            role: match message.role {
-                ExternalAgentReplayRole::User => "user",
-                ExternalAgentReplayRole::Assistant => "assistant",
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => {
+                let trimmed = text.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
             }
-            .to_string(),
-            content: message.content.clone(),
-            thinking: None,
-            created_at: None,
-            status: None,
+            ContentBlock::ImageUrl { .. } | ContentBlock::ImageBase64 { .. } => None,
         })
-        .collect())
-}
+        .collect::<Vec<_>>();
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) async fn get_external_agent_session_detail(
-    session_id: &str,
-) -> Result<ExternalAgentSessionDetail, ToolError> {
-    let config = load_app_config()?;
-    let mut store = load_session_store()?;
-    normalize_session_store(&mut store);
-    let record = store
-        .sessions
-        .iter()
-        .find(|session| session.id == session_id)
-        .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))?;
-    let display_name = config
-        .get_external_agent(&record.agent_name)
-        .map(|agent| agent.display_name.as_str());
-    let summary = session_summary(record, display_name);
-    match load_session_transcript_entries(record).await {
-        Ok(messages) => Ok(ExternalAgentSessionDetail {
-            summary,
-            messages,
-            transcript_error: None,
-        }),
-        Err(error) => Ok(ExternalAgentSessionDetail {
-            summary,
-            messages: Vec::new(),
-            transcript_error: Some(error.message),
-        }),
+    if omitted_image_count > 0 {
+        sections.push(format!(
+            "（附带 {omitted_image_count} 张图片；当前 external agent 会话只转发文本化内容，未包含图片二进制。）"
+        ));
     }
-}
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) async fn get_external_agent_session_detail(
-    session_id: &str,
-) -> Result<ExternalAgentSessionDetail, ToolError> {
-    let _ = session_id;
-    Err(ToolError::denied(
-        "external agent session detail 当前仅支持桌面端",
-    ))
+    let prompt = sections.join("\n\n");
+    if prompt.trim().is_empty() {
+        return Err(ToolError::invalid(
+            "external agent 当前只能发送文本化内容；请补充文本说明，或移除仅图片附件。",
+        ));
+    }
+
+    Ok(prompt)
 }
 
 fn find_owned_session_mut<'a>(
@@ -1156,14 +1093,6 @@ fn find_owned_session_mut<'a>(
     Ok(record)
 }
 
-fn parent_conversation_id_for_scope(scope: &ExternalAgentSessionScope) -> &str {
-    if scope.kind == ExternalAgentSessionScopeKind::Conversation {
-        scope.id.as_str()
-    } else {
-        ""
-    }
-}
-
 fn find_session_mut_by_id<'a>(
     store: &'a mut ExternalAgentSessionStore,
     session_id: &str,
@@ -1173,438 +1102,6 @@ fn find_session_mut_by_id<'a>(
         .iter_mut()
         .find(|session| session.id == session_id)
         .ok_or_else(|| ToolError::invalid(format!("agent_session 未找到会话：{session_id}")))
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) async fn start_external_agent_session_direct(
-    request: DirectAgentSessionStartRequest,
-) -> Result<ExternalAgentSessionCommandResult, ToolError> {
-    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
-    let prompt = request.prompt.trim();
-    if prompt.is_empty() {
-        return Err(ToolError::invalid("agent session 初始消息不能为空"));
-    }
-    let config = load_app_config()?;
-    let external_agent = resolve_external_agent(&config, &request.agent_name)?;
-    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
-        .or_else(|| normalize_optional_string(external_agent.model_ref.as_deref()));
-    let effective_run_mode = normalize_optional_string(request.run_mode.as_deref())
-        .or_else(|| normalize_optional_string(external_agent.run_mode.as_deref()));
-    let effective_thinking = request
-        .thinking
-        .clone()
-        .or_else(|| external_agent.thinking.clone());
-    let effective_timeout_ms = request
-        .timeout_ms
-        .or(external_agent.default_timeout_ms)
-        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
-        .clamp(1_000, 3_600_000);
-    if external_agent.transport.transport_type == ExternalAgentTransportType::Headless {
-        maybe_validate_auto_headless_target(
-            &config,
-            external_agent,
-            effective_model_ref.as_deref(),
-            effective_run_mode.as_deref(),
-        )?;
-    }
-
-    let workdir = resolve_unrestricted_workdir(
-        request.cwd.as_deref(),
-        None,
-        external_agent.transport.cwd.as_ref(),
-    );
-    let scope = request.scope.clone();
-    let session_id = format!("agent_session_{}", uuid::Uuid::new_v4());
-    let remote_agent_name = effective_remote_agent_name(external_agent);
-    let title = normalize_optional_string(request.title.as_deref())
-        .unwrap_or_else(|| format!("{} Session", external_agent.display_name));
-
-    let (record, output) = match external_agent.transport.transport_type {
-        ExternalAgentTransportType::Headless => {
-            let db_path = session_db_path(&session_id)?;
-            if let Some(parent) = db_path.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    ToolError::new(format!(
-                        "创建 external agent session DB 目录失败（{}）: {e}",
-                        parent.display()
-                    ))
-                })?;
-            }
-            let request_payload = json!({
-                "requestId": format!("agent_session_start_{}", uuid::Uuid::new_v4()),
-                "task": {
-                    "content": prompt,
-                    "agentName": remote_agent_name.clone(),
-                    "modelRef": effective_model_ref.clone(),
-                    "runMode": effective_run_mode.clone(),
-                    "thinking": effective_thinking.clone(),
-                },
-                "session": {
-                    "backend": "db",
-                    "mode": "new",
-                    "dbPath": db_path.to_string_lossy().to_string(),
-                    "title": title.clone(),
-                },
-                "output": {
-                    "mode": "final_json",
-                    "includeEvents": false,
-                    "includeMessages": false,
-                },
-                "runtime": {
-                    "timeoutMs": effective_timeout_ms,
-                }
-            });
-            let output = headless_output_to_invocation(
-                invoke_external_headless(
-                    AGENT_SESSION_TOOL_NAME,
-                    external_agent,
-                    &request_payload,
-                    effective_timeout_ms,
-                    workdir.clone(),
-                    parent_conversation_id_for_scope(&scope),
-                    Some(session_id.as_str()),
-                    Some(AgentSessionAction::Start),
-                )
-                .await?,
-            );
-            let session_ref = output.session_ref.clone().ok_or_else(|| {
-                ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
-            })?;
-            let child_conversation_id = session_ref
-                .get("conversationId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
-                })?
-                .to_string();
-            let stored_db_path = session_ref
-                .get("dbPath")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| Some(db_path.to_string_lossy().to_string()));
-            let now = Utc::now();
-            (
-                ExternalAgentSessionRecord {
-                    id: session_id.clone(),
-                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
-                    scope_kind: scope.kind,
-                    scope_id: scope.id.clone(),
-                    agent_name: external_agent.name.clone(),
-                    remote_agent_name: remote_agent_name.clone(),
-                    title: title.clone(),
-                    status: ExternalAgentSessionStatus::Active,
-                    created_at: now,
-                    updated_at: now,
-                    transport_type: external_agent.transport.transport_type,
-                    child_conversation_id,
-                    db_path: stored_db_path,
-                    model_ref: effective_model_ref.clone(),
-                    run_mode: effective_run_mode.clone(),
-                    thinking: effective_thinking.clone(),
-                    cwd: workdir
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    replay_messages: Vec::new(),
-                    last_result_preview: preview_text(&output.content),
-                    last_error: None,
-                },
-                output,
-            )
-        }
-        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
-            let output = invoke_cli_transport(
-                AGENT_SESSION_TOOL_NAME,
-                external_agent,
-                prompt,
-                effective_model_ref.as_deref(),
-                effective_timeout_ms,
-                workdir.as_deref(),
-                parent_conversation_id_for_scope(&scope),
-                Some(session_id.as_str()),
-                Some(AgentSessionAction::Start.as_str()),
-            )
-            .await?;
-            let now = Utc::now();
-            (
-                ExternalAgentSessionRecord {
-                    id: session_id.clone(),
-                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
-                    scope_kind: scope.kind,
-                    scope_id: scope.id.clone(),
-                    agent_name: external_agent.name.clone(),
-                    remote_agent_name: remote_agent_name.clone(),
-                    title: title.clone(),
-                    status: ExternalAgentSessionStatus::Active,
-                    created_at: now,
-                    updated_at: now,
-                    transport_type: external_agent.transport.transport_type,
-                    child_conversation_id: session_id.clone(),
-                    db_path: None,
-                    model_ref: effective_model_ref.clone(),
-                    run_mode: effective_run_mode.clone(),
-                    thinking: effective_thinking.clone(),
-                    cwd: workdir
-                        .as_ref()
-                        .map(|path| path.to_string_lossy().to_string()),
-                    replay_messages: vec![
-                        ExternalAgentReplayMessage {
-                            role: ExternalAgentReplayRole::User,
-                            content: prompt.to_string(),
-                        },
-                        ExternalAgentReplayMessage {
-                            role: ExternalAgentReplayRole::Assistant,
-                            content: output.content.clone(),
-                        },
-                    ],
-                    last_result_preview: preview_text(&output.content),
-                    last_error: None,
-                },
-                output,
-            )
-        }
-    };
-
-    let mut store = load_session_store()?;
-    store.sessions.retain(|session| session.id != record.id);
-    store.sessions.push(record);
-    save_session_store(&store)?;
-    let detail = get_external_agent_session_detail(&session_id).await?;
-    Ok(ExternalAgentSessionCommandResult {
-        detail,
-        content: output.content,
-        thinking: output.thinking,
-        model: output.model.or(effective_model_ref),
-        usage: output.usage,
-        binary: output.binary_display,
-        exit_code: output.exit_code,
-    })
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) async fn send_external_agent_session_direct(
-    request: DirectAgentSessionSendRequest,
-) -> Result<ExternalAgentSessionCommandResult, ToolError> {
-    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
-    let prompt = request.prompt.trim();
-    if prompt.is_empty() {
-        return Err(ToolError::invalid("agent session 消息不能为空"));
-    }
-    let config = load_app_config()?;
-    let mut store = load_session_store()?;
-    let record = find_session_mut_by_id(&mut store, &request.session_id)?;
-    if record.status != ExternalAgentSessionStatus::Active {
-        return Err(ToolError::denied(format!(
-            "agent_session 会话已关闭：{}",
-            request.session_id
-        )));
-    }
-    let external_agent = resolve_external_agent(&config, &record.agent_name)?;
-    if external_agent.transport.transport_type != record.transport_type {
-        return Err(ToolError::new(format!(
-            "agent_session 当前配置的 transport 已变化：session={}, current={}",
-            record.transport_type.as_str(),
-            external_agent.transport.transport_type.as_str()
-        )));
-    }
-
-    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
-        .or_else(|| record.model_ref.clone());
-    let effective_run_mode =
-        normalize_optional_string(request.run_mode.as_deref()).or_else(|| record.run_mode.clone());
-    let effective_thinking = request.thinking.clone().or_else(|| record.thinking.clone());
-    let effective_timeout_ms = request
-        .timeout_ms
-        .or(external_agent.default_timeout_ms)
-        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
-        .clamp(1_000, 3_600_000);
-    if record.transport_type == ExternalAgentTransportType::Headless {
-        maybe_validate_auto_headless_target(
-            &config,
-            external_agent,
-            effective_model_ref.as_deref(),
-            effective_run_mode.as_deref(),
-        )?;
-    }
-
-    let scope = record.scope();
-    let workdir = resolve_unrestricted_workdir(
-        request.cwd.as_deref(),
-        record.cwd.as_deref(),
-        external_agent.transport.cwd.as_ref(),
-    );
-    let output_result = match record.transport_type {
-        ExternalAgentTransportType::Headless => {
-            let db_path = record.db_path.clone().ok_or_else(|| {
-                ToolError::new(format!(
-                    "agent_session 会话缺少 dbPath：{}",
-                    request.session_id
-                ))
-            })?;
-            let request_payload = json!({
-                "requestId": format!("agent_session_send_{}", uuid::Uuid::new_v4()),
-                "task": {
-                    "content": prompt,
-                    "agentName": record.remote_agent_name.clone(),
-                    "modelRef": effective_model_ref.clone(),
-                    "runMode": effective_run_mode.clone(),
-                    "thinking": effective_thinking.clone(),
-                },
-                "session": {
-                    "backend": "db",
-                    "mode": "resume",
-                    "conversationId": record.child_conversation_id.clone(),
-                    "dbPath": db_path,
-                    "title": record.title.clone(),
-                },
-                "output": {
-                    "mode": "final_json",
-                    "includeEvents": false,
-                    "includeMessages": false,
-                },
-                "runtime": {
-                    "timeoutMs": effective_timeout_ms,
-                }
-            });
-            invoke_external_headless(
-                AGENT_SESSION_TOOL_NAME,
-                external_agent,
-                &request_payload,
-                effective_timeout_ms,
-                workdir.clone(),
-                parent_conversation_id_for_scope(&scope),
-                Some(request.session_id.as_str()),
-                Some(AgentSessionAction::Send),
-            )
-            .await
-            .map(headless_output_to_invocation)
-        }
-        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
-            let replay_prompt = build_replay_prompt(&record.title, &record.replay_messages, prompt);
-            invoke_cli_transport(
-                AGENT_SESSION_TOOL_NAME,
-                external_agent,
-                &replay_prompt,
-                effective_model_ref.as_deref(),
-                effective_timeout_ms,
-                workdir.as_deref(),
-                parent_conversation_id_for_scope(&scope),
-                Some(request.session_id.as_str()),
-                Some(AgentSessionAction::Send.as_str()),
-            )
-            .await
-        }
-    };
-
-    let output = match output_result {
-        Ok(output) => output,
-        Err(err) => {
-            record.updated_at = Utc::now();
-            record.last_error = Some(err.message.clone());
-            save_session_store(&store)?;
-            return Err(err);
-        }
-    };
-
-    record.updated_at = Utc::now();
-    record.model_ref = effective_model_ref.clone();
-    record.run_mode = effective_run_mode.clone();
-    record.thinking = effective_thinking.clone();
-    record.cwd = workdir
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string());
-    if record.transport_type != ExternalAgentTransportType::Headless {
-        record.replay_messages.push(ExternalAgentReplayMessage {
-            role: ExternalAgentReplayRole::User,
-            content: prompt.to_string(),
-        });
-        record.replay_messages.push(ExternalAgentReplayMessage {
-            role: ExternalAgentReplayRole::Assistant,
-            content: output.content.clone(),
-        });
-    }
-    record.last_result_preview = preview_text(&output.content);
-    record.last_error = None;
-    save_session_store(&store)?;
-    let detail = get_external_agent_session_detail(&request.session_id).await?;
-    Ok(ExternalAgentSessionCommandResult {
-        detail,
-        content: output.content,
-        thinking: output.thinking,
-        model: output.model.or(effective_model_ref),
-        usage: output.usage,
-        binary: output.binary_display,
-        exit_code: output.exit_code,
-    })
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub(crate) async fn close_external_agent_session_direct(
-    session_id: &str,
-    delete_session_db: bool,
-) -> Result<ExternalAgentSessionDetail, ToolError> {
-    let config = load_app_config()?;
-    let mut store = load_session_store()?;
-    let record = find_session_mut_by_id(&mut store, session_id)?;
-    let existing_db_path = record.db_path.clone();
-    if delete_session_db {
-        if let Some(path) = existing_db_path.as_deref() {
-            match fs::remove_file(path) {
-                Ok(()) => {
-                    record.db_path = None;
-                }
-                Err(err) if err.kind() == ErrorKind::NotFound => {
-                    record.db_path = None;
-                }
-                Err(err) => {
-                    return Err(ToolError::new(format!(
-                        "agent_session 删除 DB 文件失败（{}）: {err}",
-                        path
-                    )));
-                }
-            }
-        }
-    }
-    record.status = ExternalAgentSessionStatus::Closed;
-    record.updated_at = Utc::now();
-    let display_name = config
-        .get_external_agent(&record.agent_name)
-        .map(|agent| agent.display_name.as_str());
-    let summary = session_summary(record, display_name);
-    save_session_store(&store)?;
-    match get_external_agent_session_detail(session_id).await {
-        Ok(detail) => Ok(detail),
-        Err(error) => Ok(ExternalAgentSessionDetail {
-            summary,
-            messages: Vec::new(),
-            transcript_error: Some(error.message),
-        }),
-    }
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) async fn start_external_agent_session_direct(
-    request: DirectAgentSessionStartRequest,
-) -> Result<ExternalAgentSessionCommandResult, ToolError> {
-    let _ = request;
-    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) async fn send_external_agent_session_direct(
-    request: DirectAgentSessionSendRequest,
-) -> Result<ExternalAgentSessionCommandResult, ToolError> {
-    let _ = request;
-    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
-}
-
-#[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) async fn close_external_agent_session_direct(
-    session_id: &str,
-    delete_session_db: bool,
-) -> Result<ExternalAgentSessionDetail, ToolError> {
-    let _ = session_id;
-    let _ = delete_session_db;
-    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
 }
 
 pub(crate) async fn run_external_agent_once(
@@ -1654,7 +1151,8 @@ pub(crate) async fn run_external_agent_once(
         external_agent.transport.cwd.as_ref(),
     )?;
 
-    let output = match external_agent.transport.transport_type {
+    let empty_replay_history: &[ExternalAgentReplayMessage] = &[];
+    let (output, session_mode, degraded_to_replay) = match external_agent.transport.transport_type {
         ExternalAgentTransportType::Headless => {
             let request_payload = json!({
                 "requestId": format!("subagent_call_external_{}", uuid::Uuid::new_v4()),
@@ -1679,33 +1177,47 @@ pub(crate) async fn run_external_agent_once(
                     "timeoutMs": effective_timeout_ms,
                 }
             });
-            headless_output_to_invocation(
-                invoke_external_headless(
-                    EXTERNAL_ONCE_TOOL_LABEL,
-                    external_agent,
-                    &request_payload,
-                    effective_timeout_ms,
-                    workdir.clone(),
-                    ctx.conversation_id,
-                    None,
-                    None,
-                )
-                .await?,
+            (
+                headless_output_to_invocation(
+                    invoke_external_headless(
+                        EXTERNAL_ONCE_TOOL_LABEL,
+                        external_agent,
+                        &request_payload,
+                        effective_timeout_ms,
+                        workdir.clone(),
+                        ctx.conversation_id,
+                        None,
+                        None,
+                    )
+                    .await?,
+                ),
+                crate::external_agents::ExternalAgentSessionMode::Native,
+                false,
             )
         }
         ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
-            invoke_cli_transport(
-                EXTERNAL_ONCE_TOOL_LABEL,
-                external_agent,
-                &prompt,
-                effective_model_ref.as_deref(),
-                effective_timeout_ms,
-                workdir.as_deref(),
-                ctx.conversation_id,
-                None,
-                None,
+            let runtime_output =
+                run_external_agent_session_runtime(ExternalAgentSessionRuntimeRequest {
+                    tool_name: EXTERNAL_ONCE_TOOL_LABEL,
+                    external_agent,
+                    prompt: &prompt,
+                    title: external_agent.display_name.as_str(),
+                    replay_history: empty_replay_history,
+                    model_ref: effective_model_ref.as_deref(),
+                    timeout_ms: effective_timeout_ms,
+                    workdir: workdir.as_deref(),
+                    parent_conversation_id: ctx.conversation_id,
+                    runtime_session_id: None,
+                    action: None,
+                    kind: ExternalAgentSessionRuntimeKind::Once,
+                    provider_session: None,
+                })
+                .await?;
+            (
+                runtime_output.invocation,
+                runtime_output.session_mode,
+                runtime_output.degraded_to_replay,
             )
-            .await?
         }
     };
 
@@ -1727,6 +1239,7 @@ pub(crate) async fn run_external_agent_once(
         "displayName": external_agent.display_name,
         "remoteAgentName": remote_agent_name,
         "transport": external_agent.transport.transport_type.as_str(),
+        "sessionMode": session_mode_label(session_mode),
         "content": content,
         "thinking": thinking,
         "model": model,
@@ -1747,6 +1260,8 @@ pub(crate) async fn run_external_agent_once(
                 "binary": binary_display,
                 "exitCode": exit_code,
                 "timeoutMs": effective_timeout_ms,
+                "sessionMode": session_mode_label(session_mode),
+                "degradedToReplay": degraded_to_replay,
                 "cwd": cwd,
             }
         })),
@@ -1793,7 +1308,7 @@ async fn run_agent_session_start(
     let title = normalize_optional_string(args.title.as_deref())
         .unwrap_or_else(|| format!("{} Session", external_agent.display_name));
 
-    let (record, output) = match external_agent.transport.transport_type {
+    let (record, output, degraded_to_replay) = match external_agent.transport.transport_type {
         ExternalAgentTransportType::Headless => {
             let db_path = session_db_path(&session_id)?;
             if let Some(parent) = db_path.parent() {
@@ -1872,7 +1387,10 @@ async fn run_agent_session_start(
                     created_at: now,
                     updated_at: now,
                     transport_type: external_agent.transport.transport_type,
+                    session_mode: crate::external_agents::ExternalAgentSessionMode::Native,
                     child_conversation_id,
+                    provider_session_id: None,
+                    provider_message_id: None,
                     db_path: stored_db_path,
                     model_ref: effective_model_ref.clone(),
                     run_mode: effective_run_mode.clone(),
@@ -1885,22 +1403,33 @@ async fn run_agent_session_start(
                     last_error: None,
                 },
                 output,
+                false,
             )
         }
         ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
-            let output = invoke_cli_transport(
-                AGENT_SESSION_TOOL_NAME,
-                external_agent,
-                prompt,
-                effective_model_ref.as_deref(),
-                effective_timeout_ms,
-                workdir.as_deref(),
-                ctx.conversation_id,
-                Some(session_id.as_str()),
-                Some(AgentSessionAction::Start.as_str()),
-            )
-            .await?;
+            let runtime_output =
+                run_external_agent_session_runtime(ExternalAgentSessionRuntimeRequest {
+                    tool_name: AGENT_SESSION_TOOL_NAME,
+                    external_agent,
+                    prompt,
+                    title: title.as_str(),
+                    replay_history: &[],
+                    model_ref: effective_model_ref.as_deref(),
+                    timeout_ms: effective_timeout_ms,
+                    workdir: workdir.as_deref(),
+                    parent_conversation_id: ctx.conversation_id,
+                    runtime_session_id: Some(session_id.as_str()),
+                    action: Some(AgentSessionAction::Start.as_str()),
+                    kind: ExternalAgentSessionRuntimeKind::SessionStart,
+                    provider_session: None,
+                })
+                .await?;
             let now = Utc::now();
+            let provider_session_id = runtime_output.provider_session.conversation_id.clone();
+            let provider_message_id = runtime_output.provider_session.message_id.clone();
+            let child_conversation_id = provider_session_id
+                .clone()
+                .unwrap_or_else(|| session_id.clone());
             (
                 ExternalAgentSessionRecord {
                     id: session_id.clone(),
@@ -1914,7 +1443,10 @@ async fn run_agent_session_start(
                     created_at: now,
                     updated_at: now,
                     transport_type: external_agent.transport.transport_type,
-                    child_conversation_id: session_id.clone(),
+                    session_mode: runtime_output.session_mode,
+                    child_conversation_id,
+                    provider_session_id,
+                    provider_message_id,
                     db_path: None,
                     model_ref: effective_model_ref.clone(),
                     run_mode: effective_run_mode.clone(),
@@ -1929,13 +1461,14 @@ async fn run_agent_session_start(
                         },
                         ExternalAgentReplayMessage {
                             role: ExternalAgentReplayRole::Assistant,
-                            content: output.content.clone(),
+                            content: runtime_output.invocation.content.clone(),
                         },
                     ],
-                    last_result_preview: preview_text(&output.content),
+                    last_result_preview: preview_text(&runtime_output.invocation.content),
                     last_error: None,
                 },
-                output,
+                runtime_output.invocation,
+                runtime_output.degraded_to_replay,
             )
         }
     };
@@ -1967,6 +1500,10 @@ async fn run_agent_session_start(
                 "agentName": external_agent.name,
                 "displayName": external_agent.display_name,
                 "implementation": external_agent.transport.transport_type.as_str(),
+                "sessionMode": session_mode_label(record.session_mode),
+                "providerSessionId": record.provider_session_id.clone(),
+                "providerMessageId": record.provider_message_id.clone(),
+                "degradedToReplay": degraded_to_replay,
                 "binary": binary_display,
                 "exitCode": exit_code,
                 "timeoutMs": effective_timeout_ms,
@@ -2065,25 +1602,41 @@ async fn run_agent_session_send(
             )
             .await
             .map(headless_output_to_invocation)
+            .map(|output| (output, None, None, false))
         }
         ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
-            let replay_prompt = build_replay_prompt(&record.title, &record.replay_messages, prompt);
-            invoke_cli_transport(
-                AGENT_SESSION_TOOL_NAME,
+            let provider_session = ExternalAgentProviderSessionRef {
+                conversation_id: record.provider_session_id.clone(),
+                message_id: record.provider_message_id.clone(),
+            };
+            run_external_agent_session_runtime(ExternalAgentSessionRuntimeRequest {
+                tool_name: AGENT_SESSION_TOOL_NAME,
                 external_agent,
-                &replay_prompt,
-                effective_model_ref.as_deref(),
-                effective_timeout_ms,
-                workdir.as_deref(),
-                ctx.conversation_id,
-                Some(session_id.as_str()),
-                Some(AgentSessionAction::Send.as_str()),
-            )
+                prompt,
+                title: record.title.as_str(),
+                replay_history: &record.replay_messages,
+                model_ref: effective_model_ref.as_deref(),
+                timeout_ms: effective_timeout_ms,
+                workdir: workdir.as_deref(),
+                parent_conversation_id: ctx.conversation_id,
+                runtime_session_id: Some(session_id.as_str()),
+                action: Some(AgentSessionAction::Send.as_str()),
+                kind: ExternalAgentSessionRuntimeKind::SessionSend,
+                provider_session: Some(&provider_session),
+            })
             .await
+            .map(|runtime_output| {
+                (
+                    runtime_output.invocation,
+                    Some(runtime_output.provider_session),
+                    Some(runtime_output.session_mode),
+                    runtime_output.degraded_to_replay,
+                )
+            })
         }
     };
 
-    let output = match output_result {
+    let (output, provider_session, session_mode, degraded_to_replay) = match output_result {
         Ok(output) => output,
         Err(err) => {
             record.updated_at = Utc::now();
@@ -2100,6 +1653,14 @@ async fn run_agent_session_send(
     record.cwd = workdir
         .as_ref()
         .map(|path| path.to_string_lossy().to_string());
+    if let Some(provider_session) = provider_session {
+        record.session_mode = session_mode.unwrap_or(record.session_mode);
+        record.provider_session_id = provider_session.conversation_id.clone();
+        record.provider_message_id = provider_session.message_id.clone();
+        if let Some(provider_session_id) = provider_session.conversation_id {
+            record.child_conversation_id = provider_session_id;
+        }
+    }
     if record.transport_type != ExternalAgentTransportType::Headless {
         record.replay_messages.push(ExternalAgentReplayMessage {
             role: ExternalAgentReplayRole::User,
@@ -2113,6 +1674,9 @@ async fn run_agent_session_send(
     record.last_result_preview = preview_text(&output.content);
     record.last_error = None;
     let implementation = record.transport_type.as_str().to_string();
+    let session_mode = record.session_mode;
+    let provider_session_id = record.provider_session_id.clone();
+    let provider_message_id = record.provider_message_id.clone();
     let summary = session_summary_value(record, Some(external_agent.display_name.as_str()));
     save_session_store(store)?;
 
@@ -2140,6 +1704,10 @@ async fn run_agent_session_send(
                 "agentName": external_agent.name,
                 "displayName": external_agent.display_name,
                 "implementation": implementation,
+                "sessionMode": session_mode_label(session_mode),
+                "providerSessionId": provider_session_id,
+                "providerMessageId": provider_message_id,
+                "degradedToReplay": degraded_to_replay,
                 "binary": binary_display,
                 "exitCode": exit_code,
                 "timeoutMs": effective_timeout_ms,
@@ -2269,6 +1837,471 @@ fn run_agent_session_close(
             }
         })),
     })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn start_external_agent_session_direct(
+    request: DirectAgentSessionStartRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
+    let prompt = build_direct_prompt(&request.content, &request.content_parts)?;
+    let config = load_app_config()?;
+    let external_agent = resolve_external_agent(&config, &request.agent_name)?;
+    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
+        .or_else(|| normalize_optional_string(external_agent.model_ref.as_deref()));
+    let effective_run_mode = normalize_optional_string(request.run_mode.as_deref())
+        .or_else(|| normalize_optional_string(external_agent.run_mode.as_deref()));
+    let effective_thinking = request
+        .thinking
+        .clone()
+        .or_else(|| external_agent.thinking.clone());
+    let effective_timeout_ms = request
+        .timeout_ms
+        .or(external_agent.default_timeout_ms)
+        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
+        .clamp(1_000, 3_600_000);
+    if external_agent.transport.transport_type == ExternalAgentTransportType::Headless {
+        maybe_validate_auto_headless_target(
+            &config,
+            external_agent,
+            effective_model_ref.as_deref(),
+            effective_run_mode.as_deref(),
+        )?;
+    }
+
+    let scope = request.scope.clone();
+    let workdir = resolve_unrestricted_workdir(
+        request.cwd.as_deref(),
+        None,
+        external_agent.transport.cwd.as_ref(),
+    );
+    let session_id = format!("agent_session_{}", uuid::Uuid::new_v4());
+    let remote_agent_name = effective_remote_agent_name(external_agent);
+    let title = normalize_optional_string(request.title.as_deref())
+        .unwrap_or_else(|| format!("{} Session", external_agent.display_name));
+
+    let (record, output, degraded_to_replay) = match external_agent.transport.transport_type {
+        ExternalAgentTransportType::Headless => {
+            let db_path = session_db_path(&session_id)?;
+            if let Some(parent) = db_path.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    ToolError::new(format!(
+                        "创建 external agent session DB 目录失败（{}）: {e}",
+                        parent.display()
+                    ))
+                })?;
+            }
+            let request_payload = json!({
+                "requestId": format!("agent_session_start_{}", uuid::Uuid::new_v4()),
+                "task": {
+                    "content": prompt,
+                    "agentName": remote_agent_name.clone(),
+                    "modelRef": effective_model_ref.clone(),
+                    "runMode": effective_run_mode.clone(),
+                    "thinking": effective_thinking.clone(),
+                },
+                "session": {
+                    "backend": "db",
+                    "mode": "new",
+                    "dbPath": db_path.to_string_lossy().to_string(),
+                    "title": title.clone(),
+                },
+                "output": {
+                    "mode": "final_json",
+                    "includeEvents": false,
+                    "includeMessages": false,
+                },
+                "runtime": {
+                    "timeoutMs": effective_timeout_ms,
+                }
+            });
+            let output = headless_output_to_invocation(
+                invoke_external_headless(
+                    AGENT_SESSION_TOOL_NAME,
+                    external_agent,
+                    &request_payload,
+                    effective_timeout_ms,
+                    workdir.clone(),
+                    parent_conversation_id_for_scope(&scope),
+                    Some(session_id.as_str()),
+                    Some(AgentSessionAction::Start),
+                )
+                .await?,
+            );
+            let session_ref = output.session_ref.clone().ok_or_else(|| {
+                ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
+            })?;
+            let child_conversation_id = session_ref
+                .get("conversationId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    ToolError::new("agent_session(start) 缺少 sessionRef.conversationId")
+                })?
+                .to_string();
+            let stored_db_path = session_ref
+                .get("dbPath")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .or_else(|| Some(db_path.to_string_lossy().to_string()));
+            let now = Utc::now();
+            (
+                ExternalAgentSessionRecord {
+                    id: session_id.clone(),
+                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
+                    scope_kind: scope.kind,
+                    scope_id: scope.id.clone(),
+                    agent_name: external_agent.name.clone(),
+                    remote_agent_name: remote_agent_name.clone(),
+                    title: title.clone(),
+                    status: ExternalAgentSessionStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    transport_type: external_agent.transport.transport_type,
+                    session_mode: crate::external_agents::ExternalAgentSessionMode::Native,
+                    child_conversation_id,
+                    provider_session_id: None,
+                    provider_message_id: None,
+                    db_path: stored_db_path,
+                    model_ref: effective_model_ref.clone(),
+                    run_mode: effective_run_mode.clone(),
+                    thinking: effective_thinking.clone(),
+                    cwd: workdir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    replay_messages: Vec::new(),
+                    last_result_preview: preview_text(&output.content),
+                    last_error: None,
+                },
+                output,
+                false,
+            )
+        }
+        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
+            let runtime_output =
+                run_external_agent_session_runtime(ExternalAgentSessionRuntimeRequest {
+                    tool_name: AGENT_SESSION_TOOL_NAME,
+                    external_agent,
+                    prompt: prompt.as_str(),
+                    title: title.as_str(),
+                    replay_history: &[],
+                    model_ref: effective_model_ref.as_deref(),
+                    timeout_ms: effective_timeout_ms,
+                    workdir: workdir.as_deref(),
+                    parent_conversation_id: parent_conversation_id_for_scope(&scope),
+                    runtime_session_id: Some(session_id.as_str()),
+                    action: Some(AgentSessionAction::Start.as_str()),
+                    kind: ExternalAgentSessionRuntimeKind::SessionStart,
+                    provider_session: None,
+                })
+                .await?;
+            let now = Utc::now();
+            let provider_session_id = runtime_output.provider_session.conversation_id.clone();
+            let provider_message_id = runtime_output.provider_session.message_id.clone();
+            let child_conversation_id = provider_session_id
+                .clone()
+                .unwrap_or_else(|| session_id.clone());
+            (
+                ExternalAgentSessionRecord {
+                    id: session_id.clone(),
+                    parent_conversation_id: parent_conversation_id_for_scope(&scope).to_string(),
+                    scope_kind: scope.kind,
+                    scope_id: scope.id.clone(),
+                    agent_name: external_agent.name.clone(),
+                    remote_agent_name: remote_agent_name.clone(),
+                    title: title.clone(),
+                    status: ExternalAgentSessionStatus::Active,
+                    created_at: now,
+                    updated_at: now,
+                    transport_type: external_agent.transport.transport_type,
+                    session_mode: runtime_output.session_mode,
+                    child_conversation_id,
+                    provider_session_id,
+                    provider_message_id,
+                    db_path: None,
+                    model_ref: effective_model_ref.clone(),
+                    run_mode: effective_run_mode.clone(),
+                    thinking: effective_thinking.clone(),
+                    cwd: workdir
+                        .as_ref()
+                        .map(|path| path.to_string_lossy().to_string()),
+                    replay_messages: vec![
+                        ExternalAgentReplayMessage {
+                            role: ExternalAgentReplayRole::User,
+                            content: prompt.to_string(),
+                        },
+                        ExternalAgentReplayMessage {
+                            role: ExternalAgentReplayRole::Assistant,
+                            content: runtime_output.invocation.content.clone(),
+                        },
+                    ],
+                    last_result_preview: preview_text(&runtime_output.invocation.content),
+                    last_error: None,
+                },
+                runtime_output.invocation,
+                runtime_output.degraded_to_replay,
+            )
+        }
+    };
+
+    let mut store = load_session_store()?;
+    store.sessions.retain(|session| session.id != record.id);
+    store.sessions.push(record.clone());
+    save_session_store(&store)?;
+
+    Ok(ExternalAgentSessionCommandResult {
+        session: session_summary(&record, Some(external_agent.display_name.as_str())),
+        content: output.content,
+        thinking: output.thinking,
+        model: output.model.or(effective_model_ref),
+        usage: output.usage,
+        binary: output.binary_display,
+        exit_code: output.exit_code,
+        degraded_to_replay,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn send_external_agent_session_direct(
+    request: DirectAgentSessionSendRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    validate_desktop_subprocess_support(AGENT_SESSION_TOOL_NAME)?;
+    let prompt = build_direct_prompt(&request.content, &request.content_parts)?;
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    let record = find_session_mut_by_id(&mut store, &request.session_id)?;
+    if record.status != ExternalAgentSessionStatus::Active {
+        return Err(ToolError::denied(format!(
+            "agent_session 会话已关闭：{}",
+            request.session_id
+        )));
+    }
+    let external_agent = resolve_external_agent(&config, &record.agent_name)?;
+    if external_agent.transport.transport_type != record.transport_type {
+        return Err(ToolError::new(format!(
+            "agent_session 当前配置的 transport 已变化：session={}, current={}",
+            record.transport_type.as_str(),
+            external_agent.transport.transport_type.as_str()
+        )));
+    }
+
+    let effective_model_ref = normalize_optional_string(request.model_ref.as_deref())
+        .or_else(|| record.model_ref.clone());
+    let effective_run_mode =
+        normalize_optional_string(request.run_mode.as_deref()).or_else(|| record.run_mode.clone());
+    let effective_thinking = request.thinking.clone().or_else(|| record.thinking.clone());
+    let effective_timeout_ms = request
+        .timeout_ms
+        .or(external_agent.default_timeout_ms)
+        .unwrap_or(DEFAULT_RUNTIME_TIMEOUT_MS)
+        .clamp(1_000, 3_600_000);
+    if record.transport_type == ExternalAgentTransportType::Headless {
+        maybe_validate_auto_headless_target(
+            &config,
+            external_agent,
+            effective_model_ref.as_deref(),
+            effective_run_mode.as_deref(),
+        )?;
+    }
+
+    let scope = record.scope();
+    let workdir = resolve_unrestricted_workdir(
+        request.cwd.as_deref(),
+        record.cwd.as_deref(),
+        external_agent.transport.cwd.as_ref(),
+    );
+
+    let output_result = match record.transport_type {
+        ExternalAgentTransportType::Headless => {
+            let db_path = record.db_path.clone().ok_or_else(|| {
+                ToolError::new(format!(
+                    "agent_session 会话缺少 dbPath：{}",
+                    request.session_id
+                ))
+            })?;
+            let request_payload = json!({
+                "requestId": format!("agent_session_send_{}", uuid::Uuid::new_v4()),
+                "task": {
+                    "content": prompt,
+                    "agentName": record.remote_agent_name.clone(),
+                    "modelRef": effective_model_ref.clone(),
+                    "runMode": effective_run_mode.clone(),
+                    "thinking": effective_thinking.clone(),
+                },
+                "session": {
+                    "backend": "db",
+                    "mode": "resume",
+                    "conversationId": record.child_conversation_id.clone(),
+                    "dbPath": db_path,
+                    "title": record.title.clone(),
+                },
+                "output": {
+                    "mode": "final_json",
+                    "includeEvents": false,
+                    "includeMessages": false,
+                },
+                "runtime": {
+                    "timeoutMs": effective_timeout_ms,
+                }
+            });
+            invoke_external_headless(
+                AGENT_SESSION_TOOL_NAME,
+                external_agent,
+                &request_payload,
+                effective_timeout_ms,
+                workdir.clone(),
+                parent_conversation_id_for_scope(&scope),
+                Some(request.session_id.as_str()),
+                Some(AgentSessionAction::Send),
+            )
+            .await
+            .map(headless_output_to_invocation)
+            .map(|output| (output, None, None, false))
+        }
+        ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
+            let provider_session = ExternalAgentProviderSessionRef {
+                conversation_id: record.provider_session_id.clone(),
+                message_id: record.provider_message_id.clone(),
+            };
+            run_external_agent_session_runtime(ExternalAgentSessionRuntimeRequest {
+                tool_name: AGENT_SESSION_TOOL_NAME,
+                external_agent,
+                prompt: prompt.as_str(),
+                title: record.title.as_str(),
+                replay_history: &record.replay_messages,
+                model_ref: effective_model_ref.as_deref(),
+                timeout_ms: effective_timeout_ms,
+                workdir: workdir.as_deref(),
+                parent_conversation_id: parent_conversation_id_for_scope(&scope),
+                runtime_session_id: Some(request.session_id.as_str()),
+                action: Some(AgentSessionAction::Send.as_str()),
+                kind: ExternalAgentSessionRuntimeKind::SessionSend,
+                provider_session: Some(&provider_session),
+            })
+            .await
+            .map(|runtime_output| {
+                (
+                    runtime_output.invocation,
+                    Some(runtime_output.provider_session),
+                    Some(runtime_output.session_mode),
+                    runtime_output.degraded_to_replay,
+                )
+            })
+        }
+    };
+
+    let (output, provider_session, session_mode, degraded_to_replay) = match output_result {
+        Ok(output) => output,
+        Err(err) => {
+            record.updated_at = Utc::now();
+            record.last_error = Some(err.message.clone());
+            save_session_store(&store)?;
+            return Err(err);
+        }
+    };
+
+    record.updated_at = Utc::now();
+    record.model_ref = effective_model_ref.clone();
+    record.run_mode = effective_run_mode.clone();
+    record.thinking = effective_thinking.clone();
+    record.cwd = workdir
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string());
+    if let Some(provider_session) = provider_session {
+        record.session_mode = session_mode.unwrap_or(record.session_mode);
+        record.provider_session_id = provider_session.conversation_id.clone();
+        record.provider_message_id = provider_session.message_id.clone();
+        if let Some(provider_session_id) = provider_session.conversation_id {
+            record.child_conversation_id = provider_session_id;
+        }
+    }
+    if record.transport_type != ExternalAgentTransportType::Headless {
+        record.replay_messages.push(ExternalAgentReplayMessage {
+            role: ExternalAgentReplayRole::User,
+            content: prompt.to_string(),
+        });
+        record.replay_messages.push(ExternalAgentReplayMessage {
+            role: ExternalAgentReplayRole::Assistant,
+            content: output.content.clone(),
+        });
+    }
+    record.last_result_preview = preview_text(&output.content);
+    record.last_error = None;
+    let summary = session_summary(record, Some(external_agent.display_name.as_str()));
+    save_session_store(&store)?;
+
+    Ok(ExternalAgentSessionCommandResult {
+        session: summary,
+        content: output.content,
+        thinking: output.thinking,
+        model: output.model.or(effective_model_ref),
+        usage: output.usage,
+        binary: output.binary_display,
+        exit_code: output.exit_code,
+        degraded_to_replay,
+    })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) async fn close_external_agent_session_direct(
+    session_id: &str,
+    delete_session_db: bool,
+) -> Result<ExternalAgentSessionSummary, ToolError> {
+    let config = load_app_config()?;
+    let mut store = load_session_store()?;
+    let record = find_session_mut_by_id(&mut store, session_id)?;
+    let existing_db_path = record.db_path.clone();
+    if delete_session_db {
+        if let Some(path) = existing_db_path.as_deref() {
+            match fs::remove_file(path) {
+                Ok(()) => {
+                    record.db_path = None;
+                }
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    record.db_path = None;
+                }
+                Err(err) => {
+                    return Err(ToolError::new(format!(
+                        "agent_session 删除 DB 文件失败（{}）: {err}",
+                        path
+                    )));
+                }
+            }
+        }
+    }
+    record.status = ExternalAgentSessionStatus::Closed;
+    record.updated_at = Utc::now();
+    let display_name = config
+        .get_external_agent(&record.agent_name)
+        .map(|agent| agent.display_name.as_str());
+    let summary = session_summary(record, display_name);
+    save_session_store(&store)?;
+    Ok(summary)
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn start_external_agent_session_direct(
+    request: DirectAgentSessionStartRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    let _ = request;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn send_external_agent_session_direct(
+    request: DirectAgentSessionSendRequest,
+) -> Result<ExternalAgentSessionCommandResult, ToolError> {
+    let _ = request;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub(crate) async fn close_external_agent_session_direct(
+    session_id: &str,
+    delete_session_db: bool,
+) -> Result<ExternalAgentSessionSummary, ToolError> {
+    let _ = session_id;
+    let _ = delete_session_db;
+    Err(ToolError::denied("external agent session 当前仅支持桌面端"))
 }
 
 async fn run_agent_session(

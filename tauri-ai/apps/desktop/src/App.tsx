@@ -133,6 +133,7 @@ function App() {
   // Session store for multi-agent workspace
   const restoreSessionState = useSessionStore((state) => state.restoreSessionState);
   const createSession = useSessionStore((state) => state.createSession);
+  const createExternalSession = useSessionStore((state) => state.createExternalSession);
   const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
   const sessions = useSessionStore((state) => state.sessions);
   const documents = useDocumentStore((state) => state.documents);
@@ -653,6 +654,7 @@ function App() {
 
     let disposed = false;
     let unlistenNewAgent: null | (() => void) = null;
+    let unlistenNewExternalAgent: null | (() => void) = null;
     let unlistenSettings: null | (() => void) = null;
     const currentWindow = getCurrentWebviewWindow();
 
@@ -674,6 +676,24 @@ function App() {
       })
       .catch(() => { });
 
+    void currentWindow.listen<string>('menu:new_external_session_agent', (event) => {
+      const agentName = typeof event.payload === 'string' ? event.payload : '';
+      if (!agentName) return;
+      void useSessionStore
+        .getState()
+        .createExternalSession(agentName)
+        .catch((e) => console.error('menu:new_external_session_agent failed:', e));
+      useUIStore.getState().setActiveView('chat');
+    })
+      .then((fn) => {
+        if (disposed) {
+          fn();
+          return;
+        }
+        unlistenNewExternalAgent = fn;
+      })
+      .catch(() => { });
+
     void currentWindow.listen('menu:open_settings', () => {
       console.log('[Shortcut][menu] menu:open_settings received in App; switching to settings view');
       useUIStore.getState().setActiveView('settings');
@@ -690,6 +710,7 @@ function App() {
     return () => {
       disposed = true;
       unlistenNewAgent?.();
+      unlistenNewExternalAgent?.();
       unlistenSettings?.();
     };
   }, [shouldInitChatRuntime]);
@@ -705,7 +726,6 @@ function App() {
     let disposed = false;
     let unlistenHistory: null | (() => void) = null;
     let unlistenPractice: null | (() => void) = null;
-    let unlistenAgentWorkspace: null | (() => void) = null;
     const currentWindow = getCurrentWebviewWindow();
 
     void currentWindow.listen('menu:open_history', () => {
@@ -732,23 +752,11 @@ function App() {
       })
       .catch(() => { });
 
-    void currentWindow.listen('menu:open_agent_workspace', () => {
-      useUIStore.getState().setActiveView('agent_sessions');
-    })
-      .then((fn) => {
-        if (disposed) {
-          fn();
-          return;
-        }
-        unlistenAgentWorkspace = fn;
-      })
-      .catch(() => { });
 
     return () => {
       disposed = true;
       unlistenHistory?.();
       unlistenPractice?.();
-      unlistenAgentWorkspace?.();
     };
   }, [shouldInitChatRuntime]);
 
@@ -1439,18 +1447,21 @@ function App() {
 
         if (skipDefaultSession) return;
         const visibleAgents = filterNonPracticeAgents(config.agents || []);
+        const enabledExternalAgents = (config.externalAgents?.agents || []).filter((agent) => agent.enabled ?? true);
         const defaultAgent =
           (config.defaultAgent && visibleAgents.some((agent) => agent.name === config.defaultAgent)
             ? config.defaultAgent
             : '') || visibleAgents[0]?.name;
-        if (defaultAgent) {
-          try {
+        try {
+          if (defaultAgent) {
             await createSession(defaultAgent);
-          } catch (error) {
-            console.error('Failed to create default session:', error);
+          } else if (enabledExternalAgents[0]) {
+            await createExternalSession(enabledExternalAgents[0].name);
+          } else {
+            console.warn('No default session entry available');
           }
-        } else {
-          console.warn('No default agent available');
+        } catch (error) {
+          console.error('Failed to create default session:', error);
         }
       }
     };
@@ -1460,6 +1471,7 @@ function App() {
     config,
     restoreSessionState,
     createSession,
+    createExternalSession,
     openHistoricalConversation,
     shouldInitChatRuntime,
     isStandalone,
@@ -1494,9 +1506,9 @@ function App() {
     viewOverrideAppliedRef.current = true;
 
     // 兼容旧的 standalone window 语义：
-    // - history/settings/agent_sessions：仍然作为初始 activeView
+    // - history/settings：仍然作为初始 activeView
     // - practice/document/web/terminal：改为在工作区内打开一个 Tab，activeView 保持 chat
-    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'agent_sessions') {
+    if (viewOverride === 'history' || viewOverride === 'settings') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
       return;
     }

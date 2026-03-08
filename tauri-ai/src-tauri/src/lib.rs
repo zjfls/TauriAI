@@ -213,13 +213,20 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     // Then inject our entries into File/View/Session submenus.
     let menu = Menu::default(app)?;
 
-    // Prepare agent list for "新建会话（按 Agent）"
-    // Exclude Workstudio/Workspace AI agents from main window "new conversation" menu.
+    // Prepare internal/external agent lists for "新建会话" 子菜单。
+    // Exclude Workstudio/Workspace AI agents from the main window's internal session menu.
     let mut enabled_agents: Vec<_> = config
         .agents
         .iter()
         .filter(|a| a.enabled && !a.is_practice() && a.workstudio_enabled != Some(true))
         .collect();
+    let mut enabled_external_agents: Vec<_> = config
+        .external_agents
+        .agents
+        .iter()
+        .filter(|a| a.enabled)
+        .collect();
+
     // If configured default agent is missing/disabled, fall back to the first enabled agent.
     // Otherwise Ctrl/Cmd+T may not be bound to any menu item, making it look "not working".
     let configured_default = config.default_agent.trim();
@@ -240,7 +247,14 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             .map(|a| a.name.as_str())
             .unwrap_or_default()
     };
+    enabled_external_agents.sort_by(|left, right| left.name.cmp(&right.name));
+    let effective_default_external_agent = enabled_external_agents
+        .first()
+        .map(|agent| agent.name.as_str())
+        .unwrap_or_default();
     let has_agents = !enabled_agents.is_empty();
+    let has_external_agents = !enabled_external_agents.is_empty();
+    let bind_new_session_shortcut_to_external = !has_agents && has_external_agents;
 
     let open_file = MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
 
@@ -264,12 +278,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     // Session/app actions (moved from top-right toolbar to system menu bar)
     // 只保留“按 Agent 新建会话”，并把快捷键绑定到默认 Agent 的菜单项。
     let new_session_shortcut = configured_shortcut(config, "session.new", "Cmd+T", "Ctrl+T");
-    let open_agent_workspace_shortcut = configured_shortcut(
-        config,
-        "app.openAgentWorkspace",
-        "Cmd+Shift+J",
-        "Ctrl+Shift+J",
-    );
     let open_settings_shortcut = configured_shortcut(config, "app.openSettings", "Cmd+,", "Ctrl+,");
     let open_history_shortcut =
         configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
@@ -307,19 +315,44 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         Submenu::with_items(app, "新建会话（按 Agent）", false, &[&empty])?
     };
 
+    let new_external_session_by_agent: Submenu<R> = if has_external_agents {
+        let mut items: Vec<MenuItem<R>> = Vec::new();
+        for agent in &enabled_external_agents {
+            let mut label = agent.display_name.clone();
+            let is_default = bind_new_session_shortcut_to_external
+                && agent.name == effective_default_external_agent;
+            if is_default {
+                label = format!("{label}（默认）");
+            }
+            let encoded = urlencoding::encode(&agent.name);
+            let id = format!("new_external_session_agent:{encoded}");
+            let accelerator = if is_default {
+                new_session_shortcut.as_deref()
+            } else {
+                None::<&str>
+            };
+            items.push(MenuItem::with_id(app, id, label, true, accelerator)?);
+        }
+        let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+            items.iter().map(|i| i as _).collect();
+        Submenu::with_items(app, "新建外部会话", true, &item_refs)?
+    } else {
+        let empty = MenuItem::with_id(
+            app,
+            "new_external_session_agent_empty",
+            "（未配置 External Agent）",
+            false,
+            None::<&str>,
+        )?;
+        Submenu::with_items(app, "新建外部会话", false, &[&empty])?
+    };
+
     let open_settings = MenuItem::with_id(
         app,
         "open_settings",
         "设置…",
         true,
         open_settings_shortcut.as_deref(),
-    )?;
-    let open_agent_workspace = MenuItem::with_id(
-        app,
-        "open_agent_workspace",
-        "子 Agent 工作台",
-        true,
-        open_agent_workspace_shortcut.as_deref(),
     )?;
     let open_practice = MenuItem::with_id(app, "open_practice", "练习", true, None::<&str>)?;
     let view_settings_separator = PredefinedMenuItem::separator(app)?;
@@ -429,7 +462,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         view.insert_items(&[&open_devtools], 0)?;
         view.insert_items(
             &[
-                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -446,7 +478,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
-                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -462,7 +493,6 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "View",
             true,
             &[
-                &open_agent_workspace,
                 &open_practice,
                 &open_settings,
                 &view_settings_separator,
@@ -494,6 +524,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
                 &open_history,
                 &session_history_separator,
                 &new_session_by_agent,
+                &new_external_session_by_agent,
             ],
             0,
         )?;
@@ -506,6 +537,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
                 &open_history,
                 &session_history_separator,
                 &new_session_by_agent,
+                &new_external_session_by_agent,
             ],
         )?;
         // Insert after View submenu. On macOS index 0 is the app menu.
@@ -628,9 +660,10 @@ fn is_chat_menu_target_label(label: &str) -> bool {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn is_main_host_menu_action(action_id: &str) -> bool {
     action_id.starts_with("new_session_agent:")
+        || action_id.starts_with("new_external_session_agent:")
         || matches!(
             action_id,
-            "open_agent_workspace" | "open_settings" | "open_history" | "open_practice"
+            "open_settings" | "open_history" | "open_practice"
         )
 }
 
@@ -782,13 +815,19 @@ fn clear_window_interaction(
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> String {
     // Keep in sync with the behavior of `build_desktop_menu`:
-    // - enabled non-workstudio agents only
-    // - default agent (or first enabled fallback)
-    // - default agent moved to the top
+    // - enabled internal agents (excluding workstudio-only)
+    // - enabled external agents
+    // - default internal agent (or first enabled fallback)
     let mut enabled_agents: Vec<_> = config
         .agents
         .iter()
-        .filter(|a| a.enabled && a.workstudio_enabled != Some(true))
+        .filter(|a| a.enabled && !a.is_practice() && a.workstudio_enabled != Some(true))
+        .collect();
+    let mut enabled_external_agents: Vec<_> = config
+        .external_agents
+        .agents
+        .iter()
+        .filter(|a| a.enabled)
         .collect();
 
     let configured_default = config.default_agent.trim();
@@ -815,18 +854,35 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         }
     }
 
+    enabled_external_agents.sort_by(|left, right| left.name.cmp(&right.name));
+    let effective_default_external_agent = enabled_external_agents
+        .first()
+        .map(|a| a.name.as_str())
+        .unwrap_or_default();
+
     let shortcut_platform_map = if cfg!(target_os = "macos") {
         &config.general.keyboard_shortcuts.mac
     } else {
         &config.general.keyboard_shortcuts.windows
     };
 
-    let mut sig = String::from("v3|default=");
+    let mut sig = String::from("v4|default=");
     sig.push_str(effective_default_agent);
+    sig.push('|');
+    sig.push_str("externalDefault=");
+    sig.push_str(effective_default_external_agent);
+    sig.push('|');
+    sig.push_str("shortcutToExternal=");
+    sig.push_str(
+        if enabled_agents.is_empty() && !enabled_external_agents.is_empty() {
+            "1"
+        } else {
+            "0"
+        },
+    );
     sig.push('|');
     for key in [
         "session.new",
-        "app.openAgentWorkspace",
         "app.openSettings",
         "app.openHistory",
         "app.openDevtools",
@@ -840,6 +896,13 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
     }
     sig.push('|');
     for a in enabled_agents {
+        sig.push_str(&a.name);
+        sig.push('=');
+        sig.push_str(&a.display_name);
+        sig.push(';');
+    }
+    sig.push('|');
+    for a in enabled_external_agents {
         sig.push_str(&a.name);
         sig.push('=');
         sig.push_str(&a.display_name);
@@ -896,16 +959,6 @@ fn run_desktop() {
                         println!("[Shortcut][menu] open_settings triggered; target_window=<none>");
                     }
                 }
-                "open_agent_workspace" => {
-                    if let Some(window) = pick_menu_target("open_agent_workspace") {
-                        emit_webview_window_event(
-                            app,
-                            window.label(),
-                            "menu:open_agent_workspace",
-                            (),
-                        );
-                    }
-                }
                 "open_practice" => {
                     if let Some(window) = pick_menu_target("open_practice") {
                         emit_webview_window_event(
@@ -931,6 +984,20 @@ fn run_desktop() {
                             app,
                             window.label(),
                             "menu:new_session_agent",
+                            agent_name,
+                        );
+                    }
+                }
+                id if id.starts_with("new_external_session_agent:") => {
+                    let raw = id.trim_start_matches("new_external_session_agent:");
+                    let agent_name = urlencoding::decode(raw)
+                        .map(|s| s.into_owned())
+                        .unwrap_or_else(|_| raw.to_string());
+                    if let Some(window) = pick_menu_target(id) {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:new_external_session_agent",
                             agent_name,
                         );
                     }
@@ -1061,11 +1128,6 @@ fn run_desktop() {
             respond_approval,
             list_pty_sessions,
             close_pty_session,
-            list_agent_sessions,
-            get_agent_session_detail,
-            start_agent_session,
-            send_agent_session_message,
-            close_agent_session,
             // Workstudio commands
             ensure_workstudio_for_conversation,
             get_workstudio,
@@ -1158,6 +1220,9 @@ fn run_desktop() {
             test_connection,
             fetch_provider_models,
             probe_external_agents,
+            start_external_agent_session,
+            send_external_agent_session,
+            close_external_agent_session,
             // Lightweight LLM calls (used by practice module)
             mobile_chat,
             mobile_generate_title,

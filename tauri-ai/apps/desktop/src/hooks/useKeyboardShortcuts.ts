@@ -67,7 +67,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const isActionInScope = useCallback(
     (actionId: string) => {
       if (scope === 'workstudio') {
-        if (actionId === 'app.openDevtools' || actionId === 'app.openAgentWorkspace') return true;
+        if (actionId === 'app.openDevtools') return true;
         return actionId.startsWith('workstudio.');
       }
       return true;
@@ -95,7 +95,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       // 在 Tauri 桌面端：这些动作由系统菜单 accelerator 处理，避免与前端 keydown 双触发。
       if (isNativeMenuAuthoritative && (
         action.id === 'session.new'
-        || action.id === 'app.openAgentWorkspace'
         || action.id === 'app.openSettings'
         || action.id === 'app.openHistory'
         || action.id === 'app.openDevtools'
@@ -144,36 +143,45 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
    */
   const handleCreateSession = useCallback(async () => {
     const agents = filterNonPracticeAgents(config?.agents || []);
-    
-    if (agents.length === 0) {
-      // No agents configured
-      console.warn('No agents configured');
+    const externalAgents = (config?.externalAgents?.agents || []).filter((agent) => agent.enabled ?? true);
+    const totalCount = agents.length + externalAgents.length;
+
+    if (totalCount === 0) {
+      console.warn('No session entry configured');
       return;
     }
-    
-    if (agents.length === 1) {
-      // Only one agent, create session directly
+
+    if (totalCount === 1) {
       try {
-        await useSessionStore.getState().createSession(agents[0].name);
+        if (agents.length === 1) {
+          await useSessionStore.getState().createSession(agents[0].name);
+        } else if (externalAgents.length === 1) {
+          await useSessionStore.getState().createExternalSession(externalAgents[0].name);
+        }
       } catch (error) {
         console.error('Failed to create session:', error);
       }
-    } else {
-      // Multiple agents, show selector or use default
-      if (onNewSessionRequest) {
-        onNewSessionRequest();
-      } else {
-        // Default: use default agent
-        const defaultAgent =
-          (config?.defaultAgent && agents.some((agent) => agent.name === config.defaultAgent)
-            ? config.defaultAgent
-            : '') || agents[0].name;
-        try {
-          await useSessionStore.getState().createSession(defaultAgent);
-        } catch (error) {
-          console.error('Failed to create session:', error);
-        }
+      return;
+    }
+
+    if (onNewSessionRequest) {
+      onNewSessionRequest();
+      return;
+    }
+
+    const defaultAgent =
+      (config?.defaultAgent && agents.some((agent) => agent.name === config.defaultAgent)
+        ? config.defaultAgent
+        : '') || agents[0]?.name || '';
+
+    try {
+      if (defaultAgent) {
+        await useSessionStore.getState().createSession(defaultAgent);
+      } else if (externalAgents[0]) {
+        await useSessionStore.getState().createExternalSession(externalAgents[0].name);
       }
+    } catch (error) {
+      console.error('Failed to create session:', error);
     }
   }, [config, onNewSessionRequest]);
   
@@ -330,10 +338,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const executeAction = useCallback(
     async (actionId: string): Promise<boolean> => {
       switch (actionId) {
-        case 'app.openAgentWorkspace': {
-          useUIStore.getState().setActiveView('agent_sessions');
-          return true;
-        }
         case 'app.openSettings': {
           console.log('[Shortcut][frontend] app.openSettings executing via keydown path');
           useUIStore.getState().setActiveView('settings');
@@ -540,7 +544,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     // Tauri 桌面端：这些动作默认由系统菜单 accelerator 处理，避免重复触发。
     if (isTauri() && (
       actionId === 'session.new'
-      || actionId === 'app.openAgentWorkspace'
       || actionId === 'app.openSettings'
       || actionId === 'app.openHistory'
       || actionId === 'app.openDevtools'

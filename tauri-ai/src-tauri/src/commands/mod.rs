@@ -4,8 +4,6 @@
 //! the frontend and backend functionality.
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-mod agent_sessions;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod code_intel;
@@ -18,6 +16,8 @@ mod db_debug;
 mod devtools;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod drag_ghost;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod external_agent_sessions;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod file;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -51,11 +51,6 @@ mod workstudio_state;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_terminal;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use agent_sessions::{
-    close_agent_session, get_agent_session_detail, list_agent_sessions, send_agent_session_message,
-    start_agent_session,
-};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -95,6 +90,10 @@ pub use drag_ghost::{
     debug_drag_ghost_create, debug_drag_ghost_destroy, debug_drag_ghost_move, drag_ghost_create,
     drag_ghost_destroy, drag_ghost_follow_start, drag_ghost_follow_stop, drag_ghost_move,
     drag_ghost_move_client,
+};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub use external_agent_sessions::{
+    close_external_agent_session, send_external_agent_session, start_external_agent_session,
 };
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use file::{

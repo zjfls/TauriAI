@@ -15,6 +15,8 @@ pub mod context_manager;
 pub mod emitter;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod events;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub mod external_agent_session_runtime;
 pub mod mcp;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub mod run_state;

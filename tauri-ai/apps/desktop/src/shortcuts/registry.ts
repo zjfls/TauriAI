@@ -15,15 +15,6 @@ export interface ShortcutActionDefinition {
 
 export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
   {
-    id: 'app.openAgentWorkspace',
-    title: '打开子 Agent 工作台',
-    description: '切换到子 Agent 工作台页面，统一管理外部 code agent 工作单元',
-    category: '应用',
-    defaultMac: 'Cmd+Shift+J',
-    defaultWindows: 'Ctrl+Shift+J',
-    allowWhenTyping: true,
-  },
-  {
     id: 'app.openSettings',
     title: '打开设置',
     description: '跳转到设置页面（Preferences/Settings）',

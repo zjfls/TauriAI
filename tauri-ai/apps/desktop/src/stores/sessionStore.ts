@@ -27,6 +27,7 @@ import type {
   RunMode,
   Conversation,
   QueuedSessionMessage,
+  ExternalAgentSessionCommandResult,
 } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
@@ -51,9 +52,9 @@ import { useWindowLayoutStore, type WindowPane } from './windowLayoutStore';
 import { chatTabId, docTabId, terminalTabId, useWorkspaceTabStore, webTabId, type WorkspaceTabId } from './workspaceTabStore';
 
 // Constants for persistence
-const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v3';
+const SESSION_STORAGE_KEY_PREFIX = 'tauri-ai:sessions:v4';
 const LEGACY_SESSION_STORAGE_KEY = 'tauri-ai:sessions';
-const PERSISTENCE_VERSION = 3;
+const PERSISTENCE_VERSION = 4;
 const MAX_SESSIONS = 20;
 const DRAFT_PERSIST_DEBOUNCE_MS = 500;
 const MAX_PERSISTED_DRAFT_CODE_SNIPPET_CHARS = 200_000;
@@ -101,6 +102,38 @@ const getSessionStateStorageKey = (): string => getWindowScopedStorageKey(SESSIO
 
 const isRunMode = (v: unknown): v is RunMode =>
   v === 'chat' || v === 'agent' || v === 'agent-custom' || v === 'agent-full-access';
+
+const isExternalSession = (session: Pick<AgentSession, 'sessionKind'> | undefined | null): boolean =>
+  session?.sessionKind === 'external_agent';
+
+const buildDefaultSessionTitle = (prefix = '新对话'): string => {
+  const nowDate = new Date();
+  const month = (nowDate.getMonth() + 1).toString().padStart(2, '0');
+  const day = nowDate.getDate().toString().padStart(2, '0');
+  const hour = nowDate.getHours().toString().padStart(2, '0');
+  const minute = nowDate.getMinutes().toString().padStart(2, '0');
+  return `${prefix}_${month}-${day} ${hour}:${minute}`;
+};
+
+const resolveMessageConversationId = (session: Pick<AgentSession, 'id' | 'conversationId'>): string =>
+  session.conversationId || session.id;
+
+const applyExternalSessionSummary = (
+  session: AgentSession,
+  summary: ExternalAgentSessionCommandResult['session']
+): AgentSession => ({
+  ...session,
+  externalSessionId: summary.sessionId,
+  externalDisplayName: summary.displayName || session.externalDisplayName || session.externalAgentName || session.agentName,
+  externalTransport: (summary.transport as AgentSession['externalTransport']) ?? session.externalTransport,
+  externalSessionMode: (summary.sessionMode as AgentSession['externalSessionMode']) ?? session.externalSessionMode ?? null,
+  externalProviderSessionId: summary.providerSessionId ?? null,
+  externalProviderMessageId: summary.providerMessageId ?? null,
+  externalCwd: summary.cwd ?? session.externalCwd ?? null,
+  externalClosed: summary.status === 'closed',
+  modelRef: summary.modelRef || session.modelRef,
+  title: summary.title || session.title,
+});
 
 export interface SessionPane {
   id: string;
@@ -447,6 +480,7 @@ export interface SessionState {
 
   // Session operations
   createSession: (agentName: string) => Promise<string>;
+  createExternalSession: (externalAgentName: string) => Promise<string>;
   closeSession: (sessionId: string) => Promise<void>;
   /** 把一个会话（conversation）停靠/移入另一个窗口（作为 tab 或分屏），成功后关闭本窗口该 tab */
   dockSessionToWindow: (sessionId: string, targetWindowLabel: string, placement?: ChatDockPlacement) => Promise<void>;
@@ -704,12 +738,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const fallbackRunMode: RunMode = toolLikeAgent ? 'agent' : 'chat';
     const runMode: RunMode = isRunMode(agent?.defaultRunMode) ? agent.defaultRunMode : fallbackRunMode;
 
-    const nowDate = new Date();
-    const month = (nowDate.getMonth() + 1).toString().padStart(2, '0');
-    const day = nowDate.getDate().toString().padStart(2, '0');
-    const hour = nowDate.getHours().toString().padStart(2, '0');
-    const minute = nowDate.getMinutes().toString().padStart(2, '0');
-    const defaultTitle = `新对话_${month}-${day} ${hour}:${minute}`;
+    const defaultTitle = buildDefaultSessionTitle();
 
     const conversation = await invoke<{ id: string }>('create_conversation', {
       title: defaultTitle,
@@ -740,6 +769,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const session: AgentSession = {
       id: sessionId,
       agentName,
+      sessionKind: 'chat',
       title: defaultTitle,
       modelRef,
       conversationId: conversation.id,
@@ -782,6 +812,72 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     return sessionId;
   },
 
+  createExternalSession: async (externalAgentName: string) => {
+    const { sessions } = get();
+
+    if (sessions.size >= MAX_SESSIONS) {
+      throw new Error(`已达到最大会话数限制 (${MAX_SESSIONS})`);
+    }
+
+    const now = new Date().toISOString();
+    const sessionId = crypto.randomUUID();
+    const externalAgent = useConfigStore.getState().getExternalAgent(externalAgentName);
+    if (!externalAgent) {
+      throw new Error(`外部 Agent 不存在或已禁用：${externalAgentName}`);
+    }
+
+    const title = buildDefaultSessionTitle(externalAgent.displayName || '外部会话');
+    const session: AgentSession = {
+      id: sessionId,
+      agentName: externalAgentName,
+      sessionKind: 'external_agent',
+      externalAgentName,
+      externalDisplayName: externalAgent.displayName,
+      externalTransport: externalAgent.transport.type,
+      externalSessionId: null,
+      externalSessionMode: null,
+      externalProviderSessionId: null,
+      externalProviderMessageId: null,
+      externalCwd: externalAgent.transport.cwd ?? null,
+      externalClosed: false,
+      title,
+      modelRef: externalAgent.modelRef,
+      conversationId: null,
+      workstudioId: null,
+      apiType: null,
+      runMode: isRunMode(externalAgent.runMode) ? externalAgent.runMode : undefined,
+      thinkingMode: undefined,
+      draftContent: '',
+      draftWorkspaceMentions: [],
+      draftCodeSnippets: [],
+      messages: [],
+      queuedMessages: [],
+      streamingBlocks: null,
+      isGenerating: false,
+      error: null,
+      hasUnreadCompletion: false,
+      unreadCompletionMessageId: null,
+      createdAt: now,
+      lastActiveAt: now,
+    };
+
+    set((state) => {
+      const nextSessions = new Map(state.sessions);
+      nextSessions.set(sessionId, session);
+      return {
+        sessions: nextSessions,
+        activeSessionId: sessionId,
+      };
+    });
+
+    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
+    const layout = useWindowLayoutStore.getState();
+    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
+
+    await get().saveSessionState();
+    return sessionId;
+  },
+
   /**
    * Close a session and persist its conversation history
    * Requirements: 1.4, 3.3, 3.4
@@ -792,6 +888,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     if (!session) return;
     clearQueuedMessagesForSession(sessionId);
+
+    if (isExternalSession(session) && session.externalSessionId && !session.externalClosed) {
+      await invoke('close_external_agent_session', {
+        sessionId: session.externalSessionId,
+        deleteSessionDb: false,
+      }).catch((error) => {
+        console.warn('close_external_agent_session failed:', error);
+      });
+    }
 
     useWindowLayoutStore.getState().closeTabInLayout(chatTabId(sessionId));
     useWorkspaceTabStore.getState().removeChatTab(sessionId);
@@ -1075,8 +1180,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Requirements: 4.3, 4.4
    */
   sendMessage: async (sessionId: string, content: string, thinking?: boolean | string, images?: ContentPart[]) => {
-    // Wait for any pending undo operations to complete first
-    // This prevents race conditions where new messages are sent before backend deletion finishes
     await pendingUndoOperation;
 
     const session = get().sessions.get(sessionId);
@@ -1084,7 +1187,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       throw new Error('Session not found');
     }
 
-    if (!session.conversationId) {
+    const externalSession = isExternalSession(session);
+    if (!externalSession && !session.conversationId) {
       throw new Error('Session has no conversation');
     }
 
@@ -1093,10 +1197,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return;
     }
 
-    // 新一轮发送开始：确保不会被“上一次撤回”的 discard 标记误伤
-    discardNextFinalizeByConversationId.delete(session.conversationId);
+    if (session.conversationId) {
+      discardNextFinalizeByConversationId.delete(session.conversationId);
+    }
 
-    // Build content parts if images are provided
     const contentParts: ContentPart[] = [];
     if (content) {
       contentParts.push({ type: 'text', text: content });
@@ -1105,10 +1209,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       contentParts.push(...images);
     }
 
-    // Create user message
     const userMessage: Message = {
       id: crypto.randomUUID(),
-      conversationId: session.conversationId,
+      conversationId: resolveMessageConversationId(session),
       role: 'user',
       content,
       contentParts: contentParts.length > 0 ? contentParts : undefined,
@@ -1116,10 +1219,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    // Clear any previous run's turn indexes (defensive)
     clearTurnIndexesForSession(sessionId);
 
-    // Update session state (stream start)
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
@@ -1138,21 +1239,73 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: newSessions };
     });
 
+    if (externalSession) {
+      try {
+        await useConfigStore.getState().flushConfigSaves?.();
+        const requestBase = {
+          content,
+          contentParts: contentParts.length > 0 ? contentParts : undefined,
+          modelRef: session.modelRef || undefined,
+          runMode: isRunMode(session.runMode) ? session.runMode : undefined,
+          thinking,
+          cwd: session.externalCwd || undefined,
+        };
+        const result = session.externalSessionId
+          ? await invoke<ExternalAgentSessionCommandResult>('send_external_agent_session', {
+              request: {
+                sessionId: session.externalSessionId,
+                ...requestBase,
+              },
+            })
+          : await invoke<ExternalAgentSessionCommandResult>('start_external_agent_session', {
+              request: {
+                agentName: session.externalAgentName || session.agentName,
+                title: session.title,
+                ...requestBase,
+              },
+            });
+
+        set((state) => {
+          const newSessions = new Map(state.sessions);
+          const currentSession = newSessions.get(sessionId);
+          if (currentSession) {
+            newSessions.set(sessionId, applyExternalSessionSummary(currentSession, result.session));
+          }
+          return { sessions: newSessions };
+        });
+
+        get().finalizeStreaming(
+          sessionId,
+          `external:${crypto.randomUUID()}`,
+          result.content,
+          result.thinking ?? undefined,
+          undefined,
+          undefined,
+          result.model || undefined
+        );
+        void get().saveSessionState();
+      } catch (err) {
+        get().handleError(sessionId, (err as any).message || String(err));
+        void get().saveSessionState();
+      } finally {
+        void drainQueuedMessages(sessionId);
+      }
+      return;
+    }
+
     try {
       const debugMode = useConfigStore.getState().config?.general?.debugMode ?? false;
-      // Ensure any debounced config edits are persisted before the backend reads config for this run.
-      // (e.g. user edits agent/provider settings and immediately sends a message)
       await useConfigStore.getState().flushConfigSaves?.();
       await invoke('run_task', {
-        conversationId: session.conversationId,
+        conversationId: session.conversationId || '',
         messageId: userMessage.id,
         content,
         contentParts: contentParts.length > 0 ? contentParts : undefined,
         agentName: session.agentName,
         modelRef: session.modelRef,
         runMode: session.runMode,
-        thinking,  // 直接传递 thinking，可以是 boolean 或 string
-        webSearchProvider: session.webSearchProvider,  // 传递 web search provider
+        thinking,
+        webSearchProvider: session.webSearchProvider,
         debugMode,
       });
     } catch (err) {
@@ -1313,7 +1466,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         thinkingMode === undefined ? undefined : thinkingMode === null ? false : thinkingMode;
 
       await invoke('retry_turn', {
-        conversationId: session.conversationId,
+        conversationId: resolveMessageConversationId(session),
         assistantMessageId,
         turnId,
         agentName: session.agentName,
@@ -1503,7 +1656,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   finalizeStreaming: (sessionId: string, turnId: string, fullContent: string, thinking?: string, debugInfo?: DebugInfo, usage?: TokenUsage, model?: string, assistantMessageId?: string, format?: string) => {
     const stateBeforeFinalize = get();
     const session = stateBeforeFinalize.sessions.get(sessionId);
-    if (!session?.conversationId) return;
+    if (!session) return;
     const config = useConfigStore.getState().config;
     const shouldNotify = shouldDispatchCompletionNotification(stateBeforeFinalize, sessionId);
 
@@ -1600,7 +1753,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
     const assistantMessage: Message = {
       id: resolvedAssistantMessageId,
-      conversationId: session.conversationId,
+      conversationId: resolveMessageConversationId(session),
       role: 'assistant',
       content: finalContent,
       thinking: finalThinking,
@@ -1740,8 +1893,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         assistantMessage.content.length >= 100 ||
         turnCount >= 2;
 
-      if (shouldGenerateTitle) {
-        // Async - don't await, let it run in background
+      if (shouldGenerateTitle && updatedSession.conversationId) {
         get().generateTitle(sessionId);
       }
     }
@@ -1755,7 +1907,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   handleError: (sessionId: string, error: string, debugInfo?: DebugInfo, turnId?: string, assistantMessageId?: string) => {
     const stateBeforeError = get();
     const session = stateBeforeError.sessions.get(sessionId);
-    if (!session?.conversationId) return;
+    if (!session) return;
     const config = useConfigStore.getState().config;
     const shouldNotify = shouldDispatchCompletionNotification(stateBeforeError, sessionId);
 
@@ -1862,7 +2014,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         const httpLine = typeof di?.response?.status === 'number' ? `HTTP ${di.response.status}` : null;
 
         const lines: string[] = [];
-        lines.push(`- conversationId: ${session.conversationId}`);
+        if (session.conversationId) {
+          lines.push(`- conversationId: ${session.conversationId}`);
+        } else {
+          lines.push(`- sessionId: ${session.id}`);
+        }
         if (resolvedTurnId) lines.push(`- turnId: ${resolvedTurnId}`);
         if (typeof resolvedTurnIndex === 'number') lines.push(`- turnIndex: ${resolvedTurnIndex}`);
         if (lastModel) lines.push(`- model: ${lastModel}`);
@@ -1887,7 +2043,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const resolvedAssistantMessageId = assistantMessageId || crypto.randomUUID();
     const assistantMessage: Message = {
       id: resolvedAssistantMessageId,
-      conversationId: currentSession.conversationId || '',
+      conversationId: resolveMessageConversationId(currentSession),
       role: 'assistant',
         content: '',
         source: 'live',
@@ -2441,6 +2597,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      return {
 	        id: session.id,
 	        agentName: session.agentName,
+	        sessionKind: session.sessionKind ?? 'chat',
+	        externalAgentName: session.externalAgentName,
+	        externalDisplayName: session.externalDisplayName,
+	        externalTransport: session.externalTransport,
+	        externalSessionId: session.externalSessionId ?? null,
+	        externalSessionMode: session.externalSessionMode ?? null,
+	        externalProviderSessionId: session.externalProviderSessionId ?? null,
+	        externalProviderMessageId: session.externalProviderMessageId ?? null,
+	        externalCwd: session.externalCwd ?? null,
+	        externalClosed: session.externalClosed ?? false,
+	        title: session.title,
 	        modelRef: session.modelRef,
 	        conversationId: session.conversationId,
 	        workstudioId: session.workstudioId ?? null,
@@ -2451,6 +2618,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        draftContent: session.draftContent,
 	        draftWorkspaceMentions,
 	        draftCodeSnippets,
+	        messages: isExternalSession(session) ? session.messages : undefined,
 	        createdAt: session.createdAt,
 	        lastActiveAt: session.lastActiveAt,
 	      };
@@ -2514,17 +2682,70 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const config = useConfigStore.getState().config;
       const availableAgents = config?.agents?.map(a => a.name) || [];
       const defaultAgent = config?.defaultAgent || availableAgents[0] || '';
+      const { useConversationStore } = await import('./conversationStore');
+      const conversations = useConversationStore.getState().conversations;
 
       const newSessions = new Map<string, AgentSession>();
 
       for (const persisted of persistedSessions) {
-        // Validate agent exists, use default if not
+        const sessionKind = persisted.sessionKind ?? 'chat';
+        if (sessionKind === 'external_agent') {
+          const externalAgentName = persisted.externalAgentName || persisted.agentName;
+          const externalAgent = useConfigStore.getState().getExternalAgent(externalAgentName);
+          const session: AgentSession = {
+            id: persisted.id,
+            agentName: externalAgentName,
+            sessionKind: 'external_agent',
+            externalAgentName,
+            externalDisplayName: persisted.externalDisplayName || externalAgent?.displayName || externalAgentName,
+            externalTransport: persisted.externalTransport || externalAgent?.transport.type,
+            externalSessionId: persisted.externalSessionId ?? null,
+            externalSessionMode: persisted.externalSessionMode ?? null,
+            externalProviderSessionId: persisted.externalProviderSessionId ?? null,
+            externalProviderMessageId: persisted.externalProviderMessageId ?? null,
+            externalCwd: persisted.externalCwd ?? externalAgent?.transport.cwd ?? null,
+            externalClosed: persisted.externalClosed ?? false,
+            title: persisted.title || buildDefaultSessionTitle(externalAgent?.displayName || '外部会话'),
+            modelRef: persisted.modelRef || externalAgent?.modelRef,
+            conversationId: null,
+            workstudioId: null,
+            apiType: null,
+            runMode: persisted.runMode && isRunMode(persisted.runMode) ? persisted.runMode : undefined,
+            thinkingMode: undefined,
+            webSearchProvider: null,
+            draftContent: persisted.draftContent ?? '',
+            draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
+              ? persisted.draftWorkspaceMentions
+                  .map((m) => ({
+                    id: String((m as any)?.id ?? '').trim(),
+                    absPath: String((m as any)?.absPath ?? '').trim(),
+                    label: String((m as any)?.label ?? '').trim(),
+                  }))
+                  .filter((m) => m.id && m.absPath)
+              : [],
+            draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
+              ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
+              : [],
+            messages: Array.isArray(persisted.messages) ? persisted.messages : [],
+            queuedMessages: [],
+            streamingBlocks: null,
+            isGenerating: false,
+            error: null,
+            hasUnreadCompletion: false,
+            unreadCompletionMessageId: null,
+            createdAt: persisted.createdAt,
+            lastActiveAt: persisted.lastActiveAt,
+          };
+
+          newSessions.set(session.id, session);
+          continue;
+        }
+
         let agentName = persisted.agentName;
         if (!availableAgents.includes(agentName)) {
           agentName = defaultAgent;
         }
 
-        // Load messages from backend
         let messages: Message[] = [];
         if (persisted.conversationId) {
           try {
@@ -2539,11 +2760,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           }
         }
 
-        // Get title from conversation store
-        const { useConversationStore } = await import('./conversationStore');
-        const conversations = useConversationStore.getState().conversations;
         const conv = conversations.find(c => c.id === persisted.conversationId);
-        const title = conv?.title || '新对话';
+        const title = conv?.title || persisted.title || '新对话';
         const convWorkstudioId = conv?.workstudioId ?? null;
 
         const agent = useConfigStore.getState().getAgent(agentName);
@@ -2556,40 +2774,41 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             : 'chat';
         const runMode = persisted.runMode ?? defaultRunMode;
 
-			        const session: AgentSession = {
-			          id: persisted.id,
-			          agentName,
-			          title,
-			          modelRef,
-			          conversationId: persisted.conversationId,
-			          workstudioId: persisted.workstudioId ?? convWorkstudioId,
-			          apiType: apiProtocol,
-			          runMode,
-			          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
-			          webSearchProvider: persisted.webSearchProvider,
-			          draftContent: persisted.draftContent ?? '',
-			          draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
-			            ? persisted.draftWorkspaceMentions
-			                .map((m) => ({
-			                  id: String((m as any)?.id ?? '').trim(),
-			                  absPath: String((m as any)?.absPath ?? '').trim(),
-			                  label: String((m as any)?.label ?? '').trim(),
-			                }))
-			                .filter((m) => m.id && m.absPath)
-			            : [],
-			          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
-			            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
-			            : [],
-			          messages,
-		          queuedMessages: [],
-		          streamingBlocks: null,
-		          isGenerating: false,
-		          error: null,
-		          hasUnreadCompletion: false,
-		          unreadCompletionMessageId: null,
-		          createdAt: persisted.createdAt,
-		          lastActiveAt: persisted.lastActiveAt,
-		        };
+        const session: AgentSession = {
+          id: persisted.id,
+          agentName,
+          sessionKind: 'chat',
+          title,
+          modelRef,
+          conversationId: persisted.conversationId,
+          workstudioId: persisted.workstudioId ?? convWorkstudioId,
+          apiType: apiProtocol,
+          runMode,
+          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
+          webSearchProvider: persisted.webSearchProvider,
+          draftContent: persisted.draftContent ?? '',
+          draftWorkspaceMentions: Array.isArray(persisted.draftWorkspaceMentions)
+            ? persisted.draftWorkspaceMentions
+                .map((m) => ({
+                  id: String((m as any)?.id ?? '').trim(),
+                  absPath: String((m as any)?.absPath ?? '').trim(),
+                  label: String((m as any)?.label ?? '').trim(),
+                }))
+                .filter((m) => m.id && m.absPath)
+            : [],
+          draftCodeSnippets: Array.isArray(persisted.draftCodeSnippets)
+            ? persisted.draftCodeSnippets.filter((s) => s?.type === 'code_snippet')
+            : [],
+          messages,
+          queuedMessages: [],
+          streamingBlocks: null,
+          isGenerating: false,
+          error: null,
+          hasUnreadCompletion: false,
+          unreadCompletionMessageId: null,
+          createdAt: persisted.createdAt,
+          lastActiveAt: persisted.lastActiveAt,
+        };
 
         newSessions.set(session.id, session);
       }
@@ -2794,6 +3013,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    const session: AgentSession = {
 	      id: sessionId,
 	      agentName,
+	      sessionKind: 'chat',
 	      title: conversation?.title || '新对话',
 	      modelRef,
 	      conversationId,

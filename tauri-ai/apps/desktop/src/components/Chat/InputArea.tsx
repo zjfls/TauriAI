@@ -3461,7 +3461,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
           </div>
         </div>
         <div className="flex flex-shrink-0 items-center gap-2">
-          {isGenerating ? (
+          {isGenerating && onAbort ? (
             <button
               type="button"
               onClick={handleAbort}

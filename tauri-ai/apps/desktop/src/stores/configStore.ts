@@ -6,7 +6,7 @@
 import { create } from 'zustand';
 import { registerConfigStateGetter, tauriInvoke as invoke } from '../utils/errorUtils';
 import { filterNonPracticeAgents, isPracticeAgentLike } from '../../../common/src/agentUtils';
-import type { AppConfig, Provider, Model, Agent } from '../types';
+import type { AppConfig, Provider, Model, Agent, ExternalAgentConfig } from '../types';
 import { useUIStore } from './uiStore';
 
 interface ConfigState {
@@ -46,6 +46,8 @@ interface ConfigState {
   // Helper getters
   getProvider: (name: string) => Provider | undefined;
   getAgent: (name: string) => Agent | undefined;
+  getExternalAgent: (name: string) => ExternalAgentConfig | undefined;
+  getEnabledExternalAgents: () => ExternalAgentConfig[];
   getDefaultAgent: () => Agent | undefined;
   getModelOptions: () => { label: string; value: string }[];
 }
@@ -309,6 +311,16 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   getAgent: (name: string) => {
     const { config } = get();
     return config?.agents.find((a) => a.name === name && (a.enabled ?? true) && !isPracticeAgentLike(a));
+  },
+
+  getExternalAgent: (name: string) => {
+    const { config } = get();
+    return config?.externalAgents?.agents?.find((agent) => agent.name === name && (agent.enabled ?? true));
+  },
+
+  getEnabledExternalAgents: () => {
+    const { config } = get();
+    return (config?.externalAgents?.agents ?? []).filter((agent) => agent.enabled ?? true);
   },
 
   getDefaultAgent: () => {

@@ -25,7 +25,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Bot, ChevronDown, FileText, Loader2, Menu, MessageSquare, History, Settings, Plus, X, Globe, Terminal, NotebookPen } from 'lucide-react';
-import type { Agent, AgentSession } from '../../types';
+import type { Agent, AgentSession, ExternalAgentConfig } from '../../types';
 import { useDocumentStore } from '../../stores/documentStore';
 import { useUIStore } from '../../stores/uiStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -45,12 +45,17 @@ import { computePopoutWindowBoundsAtCursor, dockWorkspaceItemToWindow, findChatD
 import { PRACTICE_TAB_TITLE, openPracticeWorkspaceTab } from '../../utils/practiceWorkspaceTab';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
+export type SessionCreateRequest =
+  | { kind: 'agent'; agentName: string }
+  | { kind: 'external_agent'; externalAgentName: string };
+
 interface WorkspaceTabBarProps {
   sessions: AgentSession[];
   agents: Agent[];
+  externalAgents: ExternalAgentConfig[];
   onTabClick: (sessionId: string) => void;
   onTabClose: (sessionId: string) => Promise<void> | void;
-  onNewSession: (agentName: string) => void | Promise<void>;
+  onNewSession: (request: SessionCreateRequest) => void | Promise<void>;
   onPopoutSession?: (sessionId: string) => void | Promise<void>;
   /** 是否在顶部栏展示 tabs（多 Pane 模式下应关闭，改为每个 Pane 自己的 `WindowPaneHeader` 承载 tabs） */
   showChatTabs?: boolean;
@@ -76,12 +81,13 @@ interface TabRenderItem {
 const TEAR_OFF_THRESHOLD_PX = 48;
 const TEAR_OFF_WINDOW_THRESHOLD_PX = 8;
 
-const AgentSelector: React.FC<{
+const SessionCreatorMenu: React.FC<{
   agents: Agent[];
-  onSelect: (agentName: string) => void;
+  externalAgents: ExternalAgentConfig[];
+  onSelect: (request: SessionCreateRequest) => void;
   onClose: () => void;
   buttonRef: React.RefObject<HTMLButtonElement | null>;
-}> = ({ agents, onSelect, onClose, buttonRef }) => {
+}> = ({ agents, externalAgents, onSelect, onClose, buttonRef }) => {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ top: 0, right: 0 });
 
@@ -114,48 +120,84 @@ const AgentSelector: React.FC<{
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [onClose]);
 
-  if (agents.length === 0) {
+  const totalCount = agents.length + externalAgents.length;
+  if (totalCount === 0) {
     return (
       <div
         ref={dropdownRef}
-        className="fixed w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-2 z-[100]"
+        className="fixed z-[100] w-72 rounded-lg border border-gray-200 bg-white py-2 shadow-lg dark:border-gray-700 dark:bg-gray-800"
         style={{ top: `${position.top}px`, right: `${position.right}px` }}
       >
         <div className="px-4 py-3 text-sm text-gray-500 dark:text-gray-400">
-          暂无配置的智能体，请先在设置中添加智能体
+          暂无可用会话入口，请先配置内部 Agent 或 External Agent
         </div>
       </div>
     );
   }
 
+  const renderSection = (
+    title: string,
+    items: Array<{ key: string; title: string; description?: string; badge?: string; request: SessionCreateRequest }>
+  ) => {
+    if (items.length === 0) return null;
+    return (
+      <div>
+        <div className="px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
+          {title}
+        </div>
+        {items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            onClick={() => {
+              onSelect(item.request);
+              onClose();
+            }}
+            className="flex w-full flex-col px-4 py-2 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-800 dark:text-white">{item.title}</span>
+              {item.badge ? (
+                <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-gray-700 dark:text-gray-300">
+                  {item.badge}
+                </span>
+              ) : null}
+            </div>
+            {item.description ? (
+              <span className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">{item.description}</span>
+            ) : null}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div
       ref={dropdownRef}
-      className="fixed w-64 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-[100] max-h-80 overflow-auto"
+      className="fixed z-[100] max-h-96 w-72 overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
       style={{ top: `${position.top}px`, right: `${position.right}px` }}
     >
-      <div className="px-3 py-2 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-        选择智能体
-      </div>
-      {agents.map((agent) => (
-        <button
-          key={agent.name}
-          onClick={() => {
-            onSelect(agent.name);
-            onClose();
-          }}
-          className="flex flex-col w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-        >
-          <span className="text-sm font-medium text-gray-800 dark:text-white">
-            {agent.displayName}
-          </span>
-          {agent.description && (
-            <span className="text-xs text-gray-500 dark:text-gray-400 truncate">
-              {agent.description}
-            </span>
-          )}
-        </button>
-      ))}
+      {renderSection(
+        '内部 Agent',
+        agents.map((agent) => ({
+          key: `agent:${agent.name}`,
+          title: agent.displayName,
+          description: agent.description,
+          badge: agent.type || undefined,
+          request: { kind: 'agent', agentName: agent.name } as const,
+        }))
+      )}
+      {renderSection(
+        'External Agent',
+        externalAgents.map((agent) => ({
+          key: `external:${agent.name}`,
+          title: agent.displayName,
+          description: agent.description,
+          badge: agent.transport.type,
+          request: { kind: 'external_agent', externalAgentName: agent.name } as const,
+        }))
+      )}
     </div>
   );
 };
@@ -265,6 +307,7 @@ const SortableWorkspaceTab: React.FC<{
 export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   sessions,
   agents,
+  externalAgents,
   onTabClick,
   onTabClose,
   onNewSession,
@@ -460,6 +503,8 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   const tearOffTab = async (tabId: WorkspaceTabId, clientPoint?: { x: number; y: number } | null) => {
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat' && parsed.sessionId) {
+      const session = sessionsById.get(parsed.sessionId);
+      if (!session?.conversationId) return;
       const dockTarget = await findChatDockTargetAtCursor().catch(() => null);
       if (dockTarget) {
         try {
@@ -570,7 +615,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     const parsed = parseWorkspaceTabId(tabId);
     if (parsed.kind === 'chat') {
       const session = parsed.sessionId ? sessionsById.get(parsed.sessionId) : undefined;
-      if (!session) return;
+      if (!session?.conversationId) return;
       if (onPopoutSession) {
         await onPopoutSession(session.id);
         useWindowLayoutStore.getState().closeTabInLayout(tabId);
@@ -925,12 +970,17 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
   };
 
   const handleNewSessionClick = () => {
-    if (agents.length === 0) {
+    const totalCount = agents.length + externalAgents.length;
+    if (totalCount === 0) {
       setShowAgentSelector(true);
       return;
     }
-    if (agents.length === 1) {
-      onNewSession(agents[0].name);
+    if (totalCount === 1) {
+      if (agents.length === 1) {
+        onNewSession({ kind: 'agent', agentName: agents[0].name });
+      } else if (externalAgents.length === 1) {
+        onNewSession({ kind: 'external_agent', externalAgentName: externalAgents[0].name });
+      }
       return;
     }
     setShowAgentSelector((v) => !v);
@@ -1083,33 +1133,32 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 	          </>
 	        )}
 
-	        {!isTauri() && (
-	          <>
-	            <button
-	              ref={newSessionButtonRef}
-              onClick={handleNewSessionClick}
-              className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
-              title="新建会话"
-            >
-              <Plus size={16} />
-              {agents.length > 1 && (
-                <ChevronDown
-                  size={12}
-                  className={`transition-transform ${showAgentSelector ? 'rotate-180' : ''}`}
-                />
-              )}
-            </button>
-
-            {showAgentSelector && (
-              <AgentSelector
-                agents={agents}
-                onSelect={(agentName) => onNewSession(agentName)}
-                onClose={() => setShowAgentSelector(false)}
-                buttonRef={newSessionButtonRef}
+	        <>
+	          <button
+	            ref={newSessionButtonRef}
+            onClick={handleNewSessionClick}
+            className="flex items-center gap-1 px-2 py-1.5 rounded-md text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 transition-colors"
+            title="新建会话"
+          >
+            <Plus size={16} />
+            {(agents.length + externalAgents.length > 1) && (
+              <ChevronDown
+                size={12}
+                className={`transition-transform ${showAgentSelector ? 'rotate-180' : ''}`}
               />
             )}
-          </>
-        )}
+          </button>
+
+          {showAgentSelector && (
+            <SessionCreatorMenu
+              agents={agents}
+              externalAgents={externalAgents}
+              onSelect={onNewSession}
+              onClose={() => setShowAgentSelector(false)}
+              buttonRef={newSessionButtonRef}
+            />
+          )}
+        </>
       </div>
 
       {showChatTabs && contextMenu && (
@@ -1120,7 +1169,11 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           targetId={contextMenu.targetId}
           canOpenInNewWindow={(() => {
             const parsed = parseWorkspaceTabId(contextMenu.targetId);
-            if (parsed.kind === 'chat') return true;
+            if (parsed.kind === 'chat') {
+              const sessionId = parsed.sessionId;
+              const session = sessionId ? sessionsById.get(sessionId) : undefined;
+              return Boolean(session?.conversationId);
+            }
             if (parsed.kind === 'practice') return true;
             const did = parsed.documentId;
             const doc = did ? documents.find((d) => d.id === did) : undefined;
