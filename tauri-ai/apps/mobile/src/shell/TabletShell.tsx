@@ -30,7 +30,7 @@ export function TabletShell({
   listPaneClassName?: string;
 }) {
   return (
-    <div className="h-full flex overflow-x-hidden overflow-y-hidden">
+    <div className="safe-top h-full box-border flex overflow-x-hidden overflow-y-hidden">
       <Rail tab={tab} onTabChange={onTabChange} />
 
       {listVisible && list ? (

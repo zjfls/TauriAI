@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, FileText, Globe, Loader2, TerminalSquare, X } from 'lucide-react';
+import { Bot, FileText, Globe, Loader2, NotebookPen, TerminalSquare, X } from 'lucide-react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -20,6 +20,7 @@ import {
   type ChatDockPlacement,
   type ChatWindowInfo,
 } from '../../utils/viewWindow';
+import { PRACTICE_TAB_TITLE } from '../../utils/practiceWorkspaceTab';
 
 interface WindowPaneHeaderProps {
   paneId: string;
@@ -63,6 +64,11 @@ type TabViewModel =
       title: string;
       terminalTabId: string;
       workdir?: string | null;
+    }
+  | {
+      id: WorkspaceTabId;
+      kind: 'practice';
+      title: string;
     };
 
 type SortableTabProps = {
@@ -120,6 +126,7 @@ const SortableTabBase: React.FC<SortableTabProps> = ({
     }
     if (tab.kind === 'document') return <FileText size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
     if (tab.kind === 'web') return <Globe size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+    if (tab.kind === 'practice') return <NotebookPen size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
     return <TerminalSquare size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
   })();
 
@@ -287,6 +294,10 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
         out.push({ id, kind: 'web', title: tab.title, webTabId: tab.id, url: tab.url });
         continue;
       }
+      if (parsed.kind === 'practice') {
+        out.push({ id, kind: 'practice', title: PRACTICE_TAB_TITLE });
+        continue;
+      }
       const tid = parsed.terminalTabId;
       const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
       if (!tab) continue;
@@ -416,6 +427,7 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
       return !tabContextTarget.session.isGenerating && Boolean(tabContextTarget.session.conversationId);
     }
     if (tabContextTarget.kind === 'document') return Boolean(tabContextTarget.path);
+    if (tabContextTarget.kind === 'practice') return true;
     return true;
   })();
 
@@ -479,6 +491,25 @@ export const WindowPaneHeader: React.FC<WindowPaneHeaderProps> = ({
           });
         } catch (err) {
           console.error('Failed to popout chat window:', err);
+          alert('当前环境不支持打开新窗口');
+        }
+        return;
+      }
+
+      if (target.kind === 'practice') {
+        try {
+          const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+          const win = openViewWindow('practice', PRACTICE_TAB_TITLE, { label, noDefaultSession: true });
+          win.once('tauri://created', () => {
+            void win.setFocus().catch(() => {});
+            void onCloseTab(target.id);
+          });
+          win.once('tauri://error', (err) => {
+            console.error('Failed to popout practice tab:', (err as any)?.payload ?? err);
+            alert('打开新窗口失败，请检查窗口权限/配置');
+          });
+        } catch (err) {
+          console.error('Failed to popout practice tab:', err);
           alert('当前环境不支持打开新窗口');
         }
         return;

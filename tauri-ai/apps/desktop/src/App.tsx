@@ -27,6 +27,7 @@ import { useUIStore } from './stores/uiStore';
 import { filterNonPracticeAgents } from '../../common/src/agentUtils';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
 import { chatTabId, docTabId, parseWorkspaceTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
+import { PRACTICE_TAB_TITLE, openPracticeWorkspaceTab } from './utils/practiceWorkspaceTab';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
@@ -164,6 +165,9 @@ function App() {
     }
     if (parsed.kind === 'web') {
       return parsed.webTabId ? webTabs.find((tab) => tab.id === parsed.webTabId)?.title ?? '' : '';
+    }
+    if (parsed.kind === 'practice') {
+      return PRACTICE_TAB_TITLE;
     }
     return parsed.terminalTabId ? terminalTabs.find((tab) => tab.id === parsed.terminalTabId)?.title ?? '' : '';
   }, [documents, focusedPaneId, panes, sessions, terminalTabs, webTabs]);
@@ -717,7 +721,7 @@ function App() {
       .catch(() => { });
 
     void currentWindow.listen('menu:open_practice', () => {
-      useUIStore.getState().setActiveView('practice');
+      openPracticeWorkspaceTab();
     })
       .then((fn) => {
         if (disposed) {
@@ -1490,10 +1494,15 @@ function App() {
     viewOverrideAppliedRef.current = true;
 
     // 兼容旧的 standalone window 语义：
-    // - history/settings/practice：作为初始 activeView
-    // - document/web/terminal/workstudio：视为“在工作区内打开一个 Tab”，activeView 仍为 chat
-    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'practice' || viewOverride === 'agent_sessions') {
+    // - history/settings/agent_sessions：仍然作为初始 activeView
+    // - practice/document/web/terminal：改为在工作区内打开一个 Tab，activeView 保持 chat
+    if (viewOverride === 'history' || viewOverride === 'settings' || viewOverride === 'agent_sessions') {
       if (viewOverride !== activeView) setActiveView(viewOverride);
+      return;
+    }
+
+    if (viewOverride === 'practice') {
+      openPracticeWorkspaceTab();
       return;
     }
 
@@ -1509,6 +1518,12 @@ function App() {
 
     if (activeView !== 'chat') setActiveView('chat');
   }, [viewOverride, activeView, setActiveView]);
+
+  useEffect(() => {
+    if (!shouldInitChatRuntime) return;
+    if (activeView !== 'practice') return;
+    openPracticeWorkspaceTab();
+  }, [activeView, shouldInitChatRuntime]);
 
   // ChatView keep-alive:
   // - 在主窗口内切换到 History/Settings 等视图时，不卸载 ChatView（避免滚动/定位在重建时漂移）

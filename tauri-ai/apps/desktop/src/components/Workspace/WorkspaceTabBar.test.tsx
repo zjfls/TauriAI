@@ -4,7 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { WorkspaceTabBar } from './WorkspaceTabBar';
 import { useUIStore } from '../../stores/uiStore';
 import { useDocumentStore } from '../../stores/documentStore';
-import { useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { practiceTabId, useWorkspaceTabStore } from '../../stores/workspaceTabStore';
+import { useWindowLayoutStore } from '../../stores/windowLayoutStore';
 import type { Agent, AgentSession } from '../../types';
 
 describe('WorkspaceTabBar', () => {
@@ -49,6 +50,12 @@ describe('WorkspaceTabBar', () => {
     }
     useWorkspaceTabStore.setState({ tabOrder: [] });
     useDocumentStore.setState({ documents: [], activeDocumentId: null });
+    useWindowLayoutStore.setState({
+      panes: [{ id: 'pane-1', tabIds: [], activeTabId: null, weight: 1 }],
+      focusedPaneId: 'pane-1',
+      lastUserPaneId: 'pane-1',
+      lastUserChatPaneId: null,
+    } as any);
     useUIStore.setState({ activeView: 'chat' } as any);
   });
 
@@ -76,6 +83,30 @@ describe('WorkspaceTabBar', () => {
       expect(screen.getByText('关闭当前标签')).toBeInTheDocument();
     });
   });
+
+  it('should open practice as a workspace tab from the view menu', async () => {
+    const user = userEvent.setup();
+
+    render(
+      <WorkspaceTabBar
+        sessions={mockSessions}
+        agents={mockAgents}
+        onTabClick={vi.fn()}
+        onTabClose={vi.fn()}
+        onNewSession={vi.fn()}
+        showChatTabs={false}
+      />
+    );
+
+    await user.click(screen.getByTitle('视图'));
+    await user.click(screen.getByText('练习'));
+
+    const practiceId = practiceTabId();
+    expect(useWorkspaceTabStore.getState().tabOrder).toContain(practiceId);
+    expect(useWindowLayoutStore.getState().panes.some((pane) => pane.tabIds.includes(practiceId))).toBe(true);
+    expect(useUIStore.getState().activeView).toBe('chat');
+  });
+
 
   it('should call onTabClose when clicking "关闭当前标签"', async () => {
     const user = userEvent.setup();

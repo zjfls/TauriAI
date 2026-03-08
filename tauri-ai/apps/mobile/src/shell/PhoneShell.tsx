@@ -13,7 +13,7 @@ export function PhoneShell({
   children: ReactNode;
 }) {
   return (
-    <div className="h-full flex flex-col overflow-x-hidden overflow-y-hidden">
+    <div className="safe-top h-full box-border flex flex-col overflow-x-hidden overflow-y-hidden">
       <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-hidden">{children}</div>
       <nav className="safe-bottom border-t border-white/10 bg-[#0b1220]">
         <div className="grid grid-cols-4">

@@ -6,7 +6,7 @@ import { useLayoutSize } from "../lib/breakpoints";
 import { loadChatRenderMode } from "../lib/chatRenderPrefs";
 import { getAssistantMessageBlocks } from "../lib/messageBlocks";
 import { Button } from "../ui/Button";
-import { ThinkingBlock, ToolCallBlock, WebSearchBlock } from "../ui/ChatBlocks";
+import { PendingAssistantBlock, ThinkingBlock, ToolCallBlock, WebSearchBlock } from "../ui/ChatBlocks";
 import { ChatOutlineDrawer } from "../ui/ChatOutlineDrawer";
 import { Input } from "../ui/Input";
 import { RichText } from "../ui/RichText";
@@ -48,6 +48,11 @@ type RetryContext = {
   baseMessages: ChatMessage[];
   userContent: string;
   userContentParts?: ChatContentPart[];
+};
+
+type StreamingAssistantState = {
+  messageId: string;
+  showThinkingLabel: boolean;
 };
 
 type ProviderType =
@@ -365,6 +370,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [streamingAssistantState, setStreamingAssistantState] = useState<StreamingAssistantState | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [fallbackAgentName, setFallbackAgentName] = useState<string>("");
@@ -856,6 +862,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
   const cleanupStream = async (cancelBackend: boolean) => {
     const active = activeStreamRef.current;
     activeStreamRef.current = null;
+    setStreamingAssistantState(null);
     const unlisten = unlistenRef.current;
     unlistenRef.current = null;
     if (unlisten) unlisten();
@@ -888,6 +895,13 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
 
       let assistantMessageId: string | null = null;
       const baseMessages = options?.baseMessages ?? messages;
+      const requestThinkingMode = supportsThinking
+        ? effectiveThinkingMode === undefined
+          ? true
+          : effectiveThinkingMode
+        : null;
+      const requestWebSearchEnabled = supportsWebSearch ? effectiveWebSearchEnabled : null;
+      const showThinkingLabel = requestThinkingMode !== false && requestThinkingMode != null;
 
       const userMessage: ChatMessage = {
         id: `m_${Date.now()}_${Math.random().toString(16).slice(2)}`,
@@ -929,15 +943,12 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           content: message.content,
           contentParts: Array.isArray(message.contentParts) && message.contentParts.length > 0 ? message.contentParts : undefined,
         }));
-        const requestThinkingMode = supportsThinking
-          ? effectiveThinkingMode === undefined
-            ? true
-            : effectiveThinkingMode
-          : null;
-        const requestWebSearchEnabled = supportsWebSearch ? effectiveWebSearchEnabled : null;
-
         const streamId = `s_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         await cleanupStream(true);
+        setStreamingAssistantState({
+          messageId: assistantMessageId,
+          showThinkingLabel,
+        });
 
         unlistenRef.current = await tauriListen<MobileChatStreamPayload>(
           "mobile_chat_stream",
@@ -1064,6 +1075,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
       } finally {
         if (activeStreamRef.current == null) {
           setSending(false);
+          setStreamingAssistantState(null);
         }
       }
     },
@@ -1193,8 +1205,11 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
         className="flex-1 min-h-0 overflow-y-auto overscroll-none overflow-x-hidden p-3 space-y-3"
       >
         {messages.map((m) => {
+          const assistantBlocks = m.role === "assistant" ? getAssistantMessageBlocks(m) : [];
           const isStreamingAssistant =
-            sending && m.id === activeStreamRef.current?.assistantMessageId;
+            sending && m.id === streamingAssistantState?.messageId;
+          const showPendingAssistantBubble =
+            m.role === "assistant" && isStreamingAssistant && assistantBlocks.length === 0;
           const retryAssistantMessageId =
             m.role === "user" ? findRetryAssistantMessageId(messages, m.id) : null;
           const userAttachments = m.role === "user" ? getChatAttachmentParts(m.contentParts) : [];
@@ -1207,7 +1222,7 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
             >
               {m.role === "assistant" ? (
                 <div className="max-w-[85%] w-full min-w-0 space-y-2 overflow-x-hidden">
-                  {getAssistantMessageBlocks(m).map((b) => {
+                  {assistantBlocks.map((b) => {
                     if (b.type === "thinking") {
                       return (
                         <ThinkingBlock
@@ -1262,6 +1277,11 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
                     );
                   })}
 
+                  {showPendingAssistantBubble ? (
+                    <PendingAssistantBlock
+                      label={streamingAssistantState?.showThinkingLabel ? "思考中…" : "正在回复…"}
+                    />
+                  ) : null}
                 </div>
               ) : (
                 <div className="max-w-[85%] min-w-0 space-y-1.5">

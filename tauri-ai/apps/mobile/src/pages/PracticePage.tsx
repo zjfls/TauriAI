@@ -1095,7 +1095,7 @@ export function PracticePage({ onCopyQuestionToChat }: { onCopyQuestionToChat?: 
     <>
       <div className="h-full w-full flex flex-col overflow-x-hidden overflow-y-hidden">
         {layout === "compact" ? (
-          <div className="safe-top border-b border-white/10 bg-white/5">
+          <div className="border-b border-white/10 bg-white/5">
             <div className="h-12 flex items-center gap-2 px-3">
               <select
                 className="h-9 flex-1 min-w-0 rounded-md bg-white/5 border border-white/10 px-3 text-[16px] outline-none focus:border-indigo-400"
@@ -1222,8 +1222,8 @@ export function PracticePage({ onCopyQuestionToChat }: { onCopyQuestionToChat?: 
       </div>
 
       {fullscreenInkQuestion ? (
-        <div className="fixed inset-0 z-[90] bg-[#0b1220] text-white flex flex-col overflow-hidden">
-          <div className="safe-top border-b border-white/10 bg-white/5">
+        <div className="safe-screen fixed inset-0 z-[90] box-border bg-[#0b1220] text-white flex flex-col overflow-hidden">
+          <div className="border-b border-white/10 bg-white/5">
             <div className="h-12 px-3 flex items-center justify-between gap-3">
               <div className="min-w-0 text-sm font-semibold truncate">
                 {fullscreenInkQuestion.index + 1}. {questionTypeLabel(fullscreenInkQuestion.question.type)} · 全屏作答

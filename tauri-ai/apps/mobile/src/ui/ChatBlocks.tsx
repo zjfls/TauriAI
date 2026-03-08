@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Brain, ChevronDown, ChevronRight, Search, Wrench } from "lucide-react";
+import { Brain, ChevronDown, ChevronRight, LoaderCircle, Search, Wrench } from "lucide-react";
 
 function safeParseJson(raw: string): unknown {
   const trimmed = raw.trim();
@@ -19,6 +19,17 @@ function stringify(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+export function PendingAssistantBlock({ label }: { label: string }) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white/80">
+      <div className="flex items-center gap-2">
+        <LoaderCircle size={16} className="shrink-0 animate-spin" />
+        <span>{label}</span>
+      </div>
+    </div>
+  );
 }
 
 export function ThinkingBlock({ text, isStreaming }: { text: string; isStreaming?: boolean }) {

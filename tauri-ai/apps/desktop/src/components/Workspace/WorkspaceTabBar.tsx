@@ -42,6 +42,7 @@ import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isTauri } from '@tauri-apps/api/core';
 import { computePopoutWindowBoundsAtCursor, dockWorkspaceItemToWindow, findChatDockTargetAtCursor, openViewWindow } from '../../utils/viewWindow';
+import { PRACTICE_TAB_TITLE, openPracticeWorkspaceTab } from '../../utils/practiceWorkspaceTab';
 import { WorkspaceTabContextMenu } from './WorkspaceTabContextMenu';
 
 interface WorkspaceTabBarProps {
@@ -57,7 +58,7 @@ interface WorkspaceTabBarProps {
 
 interface TabRenderItem {
   id: WorkspaceTabId;
-  kind: 'chat' | 'document' | 'web' | 'terminal';
+  kind: 'chat' | 'document' | 'web' | 'terminal' | 'practice';
   title: string;
   // For chat
   session?: AgentSession;
@@ -196,6 +197,9 @@ const SortableWorkspaceTab: React.FC<{
     }
     if (item.kind === 'terminal') {
       return <Terminal size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
+    }
+    if (item.kind === 'practice') {
+      return <NotebookPen size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
     }
     return <FileText size={14} className={isActive ? 'text-blue-500' : 'text-gray-400'} />;
   })();
@@ -355,6 +359,12 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           title: tab.title,
           webTab: { id: tab.id, title: tab.title, url: tab.url },
         });
+      } else if (parsed.kind === 'practice') {
+        out.push({
+          id,
+          kind: 'practice',
+          title: PRACTICE_TAB_TITLE,
+        });
       } else {
         const tid = parsed.terminalTabId;
         const tab = tid ? terminalTabs.find((t) => t.id === tid) : undefined;
@@ -425,6 +435,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
     if (parsed.kind === 'chat') return '会话';
     if (parsed.kind === 'document') return '文档';
     if (parsed.kind === 'web') return '网页';
+    if (parsed.kind === 'practice') return PRACTICE_TAB_TITLE;
     return '终端';
   };
 
@@ -460,6 +471,31 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           console.warn('Failed to dock chat tab via drag-drop, fallback to popout:', err);
         }
       }
+    }
+
+    if (parsed.kind === 'practice') {
+      try {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 630,
+        });
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('practice', PRACTICE_TAB_TITLE, { label, noDefaultSession: true, window: bounds });
+        win.once('tauri://created', () => {
+          void win.setFocus().catch(() => {});
+          useWindowLayoutStore.getState().closeTabInLayout(tabId);
+          useWorkspaceTabStore.getState().removePracticeTab();
+        });
+        win.once('tauri://error', (err) => {
+          console.error('Failed to popout practice tab:', (err as any)?.payload ?? err);
+          alert('打开新窗口失败，请检查窗口权限/配置');
+        });
+      } catch (err) {
+        console.error('Failed to popout practice tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
+      return;
     }
 
     if (parsed.kind === 'document') {
@@ -558,6 +594,31 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       return;
     }
 
+    if (parsed.kind === 'practice') {
+      try {
+        const bounds = await computePopoutWindowBoundsAtCursor({
+          clientPoint: clientPoint ?? null,
+          minWidth: 900,
+          minHeight: 630,
+        });
+        const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        const win = openViewWindow('practice', PRACTICE_TAB_TITLE, { label, noDefaultSession: true, window: bounds });
+        win.once('tauri://created', () => {
+          void win.setFocus().catch(() => {});
+          useWindowLayoutStore.getState().closeTabInLayout(tabId);
+          useWorkspaceTabStore.getState().removePracticeTab();
+        });
+        win.once('tauri://error', (err) => {
+          console.error('Failed to popout practice tab:', (err as any)?.payload ?? err);
+          alert('打开新窗口失败，请检查窗口权限/配置');
+        });
+      } catch (err) {
+        console.error('Failed to popout practice tab:', err);
+        alert('当前环境不支持打开新窗口');
+      }
+      return;
+    }
+
     if (parsed.kind === 'document') {
       const docId = parsed.documentId;
       const doc = docId ? documents.find((d) => d.id === docId) : undefined;
@@ -647,6 +708,10 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
       const wid = parsed.webTabId;
       if (!wid) return;
       closeWebTab(wid);
+      return;
+    }
+    if (parsed.kind === 'practice') {
+      useWorkspaceTabStore.getState().removePracticeTab();
       return;
     }
     const tid = parsed.terminalTabId;
@@ -994,9 +1059,13 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
 	                      key={item.id}
 	                      type="button"
 	                      onClick={() => {
-	                        setActiveView(item.id);
-	                        setShowViewMenu(false);
-	                      }}
+                        if (item.id === 'practice') {
+                          openPracticeWorkspaceTab();
+                        } else {
+                          setActiveView(item.id);
+                        }
+                        setShowViewMenu(false);
+                      }}
 	                      className={[
 	                        'flex w-full items-center gap-2 px-3 py-2 text-sm text-left transition-colors',
 	                        activeView === item.id
@@ -1052,6 +1121,7 @@ export const WorkspaceTabBar: React.FC<WorkspaceTabBarProps> = ({
           canOpenInNewWindow={(() => {
             const parsed = parseWorkspaceTabId(contextMenu.targetId);
             if (parsed.kind === 'chat') return true;
+            if (parsed.kind === 'practice') return true;
             const did = parsed.documentId;
             const doc = did ? documents.find((d) => d.id === did) : undefined;
             return Boolean(doc?.path);
