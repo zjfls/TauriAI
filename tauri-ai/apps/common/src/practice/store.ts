@@ -6,6 +6,7 @@ import type {
   PracticeAnswer,
   PracticeAnswerImage,
   PracticeGrading,
+  PracticeQuizGrading,
   PracticeQuestion,
   PracticeQuestionId,
   PracticeQuestionProgress,
@@ -26,7 +27,7 @@ type State = {
   deleteQuiz: (id: PracticeQuizId) => void;
   setActiveQuiz: (id: PracticeQuizId) => void;
   renameQuiz: (id: PracticeQuizId, title: string) => void;
-  appendGeneratedQuestions: (quizId: PracticeQuizId, questions: PracticeQuestion[]) => void;
+  replaceGeneratedQuestions: (quizId: PracticeQuizId, questions: PracticeQuestion[]) => void;
 
   setAnswer: (
     quizId: PracticeQuizId,
@@ -45,6 +46,7 @@ type State = {
     questionId: PracticeQuestionId,
     grading: PracticeGrading,
   ) => void;
+  setQuizGrading: (quizId: PracticeQuizId, grading: PracticeQuizGrading) => void;
   clearQuestionResult: (quizId: PracticeQuizId, questionId: PracticeQuestionId) => void;
   resetQuizProgress: (quizId: PracticeQuizId) => void;
 };
@@ -229,14 +231,14 @@ function normalizeQuizzesOnLoad(
     }
     if (!quizChanged) return quiz;
     changed = true;
-    return { ...quiz, progress: { byQuestionId: nextBy } };
+    return { ...quiz, progress: { ...(quiz.progress ?? {}), byQuestionId: nextBy } };
   });
   return { quizzes: next, changed };
 }
 
 function ensureProgress(quiz: PracticeQuiz): PracticeQuiz {
   if (quiz.progress?.byQuestionId) return quiz;
-  return { ...quiz, progress: { byQuestionId: {} } };
+  return { ...quiz, progress: { ...(quiz.progress ?? {}), byQuestionId: {} } };
 }
 
 function setQuestionProgress(
@@ -247,7 +249,14 @@ function setQuestionProgress(
   const q = ensureProgress(quiz);
   const prev = q.progress?.byQuestionId?.[questionId] ?? {};
   const nextBy = { ...(q.progress?.byQuestionId ?? {}), [questionId]: { ...prev, ...patch } };
-  return { ...q, progress: { byQuestionId: nextBy } };
+  return {
+    ...q,
+    progress: {
+      ...(q.progress ?? {}),
+      byQuestionId: nextBy,
+      quizGrading: undefined,
+    },
+  };
 }
 
 function createEmptyQuiz(opts?: CreateQuizOptions): PracticeQuiz {
@@ -349,29 +358,32 @@ export const usePracticeStore = create<State>((set) => {
       }, true);
     },
 
-    appendGeneratedQuestions: (quizId, questions) => {
-      if (!Array.isArray(questions) || questions.length === 0) return;
+    replaceGeneratedQuestions: (quizId, questions) => {
+      if (!Array.isArray(questions)) return;
       updateQuizzes((prev) => {
         const quizzes = prev.quizzes.map((q) => {
           if (q.id !== quizId) return q;
 
-          const quiz = ensureProgress(q);
-          const existedIds = new Set(quiz.questions.map((qq) => qq.id));
+          const incomingIds = new Set<string>();
           const incoming = questions
             .filter((item) => item && typeof item === "object")
             .map((item) => {
               let id = String(item.id ?? "").trim();
-              if (!id || existedIds.has(id)) {
+              if (!id || incomingIds.has(id)) {
                 do {
                   id = newId("pq");
-                } while (existedIds.has(id));
+                } while (incomingIds.has(id));
               }
-              existedIds.add(id);
+              incomingIds.add(id);
               return { ...item, id } as PracticeQuestion;
             });
 
-          if (incoming.length === 0) return quiz;
-          return { ...quiz, questions: [...quiz.questions, ...incoming], updatedAt: now() };
+          return {
+            ...q,
+            questions: incoming,
+            progress: { ...(q.progress ?? {}), byQuestionId: {}, quizGrading: undefined },
+            updatedAt: now(),
+          };
         });
         return { quizzes, activeQuizId: prev.activeQuizId };
       }, true);
@@ -421,6 +433,25 @@ export const usePracticeStore = create<State>((set) => {
       }, true);
     },
 
+    setQuizGrading: (quizId, grading) => {
+      updateQuizzes((prev) => {
+        const quizzes = prev.quizzes.map((q) => {
+          if (q.id !== quizId) return q;
+          const quiz = ensureProgress(q);
+          return {
+            ...quiz,
+            progress: {
+              ...(quiz.progress ?? {}),
+              byQuestionId: quiz.progress?.byQuestionId ?? {},
+              quizGrading: grading,
+            },
+            updatedAt: now(),
+          };
+        });
+        return { quizzes, activeQuizId: prev.activeQuizId };
+      }, true);
+    },
+
     clearQuestionResult: (quizId, questionId) => {
       updateQuizzes((prev) => {
         const quizzes = prev.quizzes.map((q) => {
@@ -438,7 +469,11 @@ export const usePracticeStore = create<State>((set) => {
       updateQuizzes((prev) => {
         const quizzes = prev.quizzes.map((q) => {
           if (q.id !== quizId) return q;
-          return { ...q, progress: { byQuestionId: {} }, updatedAt: now() };
+          return {
+            ...q,
+            progress: { ...(q.progress ?? {}), byQuestionId: {}, quizGrading: undefined },
+            updatedAt: now(),
+          };
         });
         return { quizzes, activeQuizId: prev.activeQuizId };
       }, true);

@@ -344,7 +344,15 @@ function findRetryAssistantMessageId(messages: ChatMessage[], userMessageId: str
   return null;
 }
 
-export function ChatPage({ onNewConversation }: { onNewConversation?: () => void }) {
+export function ChatPage({
+  onNewConversation,
+  onReturnToPractice,
+  returnToPracticeLabel,
+}: {
+  onNewConversation?: () => void;
+  onReturnToPractice?: () => void;
+  returnToPracticeLabel?: string;
+}) {
   const layout = useLayoutSize();
   const {
     conversations,
@@ -1169,6 +1177,19 @@ export function ChatPage({ onNewConversation }: { onNewConversation?: () => void
           onToggle={() => setOutlineOpen((v) => !v)}
           onSelect={handleOutlineSelect}
         />
+      ) : null}
+
+      {onReturnToPractice && returnToPracticeLabel ? (
+        <div className="border-b border-white/10 bg-indigo-500/10 px-3 py-2">
+          <button
+            type="button"
+            className="inline-flex items-center gap-2 rounded-lg border border-indigo-300/25 bg-indigo-500/10 px-3 py-2 text-sm text-indigo-100 transition-colors hover:bg-indigo-500/20"
+            onClick={onReturnToPractice}
+          >
+            <RotateCcw size={14} />
+            <span>{returnToPracticeLabel}</span>
+          </button>
+        </div>
       ) : null}
 
       {modelOptions.length > 0 ? (

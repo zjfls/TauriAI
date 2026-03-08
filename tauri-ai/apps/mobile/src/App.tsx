@@ -14,6 +14,13 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { NewConversationModal } from "./ui/NewConversationModal";
 import { usePracticeStore } from "../../common/src/practice/store";
 
+type PracticeReturnTarget = {
+  quizId: string;
+  questionId: string;
+  questionNumber: number;
+  scrollTop: number;
+};
+
 export default function App() {
   const layout = useLayoutSize();
   const [tab, setTab] = useState<RootTab>("chat");
@@ -21,10 +28,24 @@ export default function App() {
   const prefs = useMemo(() => loadShellPrefs(), []);
   const [listVisible, setListVisible] = useState<boolean>(prefs.listVisible);
   const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [practiceReturnTarget, setPracticeReturnTarget] = useState<PracticeReturnTarget | null>(null);
 
   useEffect(() => {
     saveShellPrefs({ listVisible });
   }, [listVisible]);
+
+  const navigateToTab = useCallback(
+    (next: RootTab) => {
+      setTab(next);
+      if (layout === "compact") return;
+      if (next === "settings") {
+        setListVisible(false);
+      } else if (layout === "expanded") {
+        setListVisible(true);
+      }
+    },
+    [layout],
+  );
 
   const { conversations, activeConversationId, createConversation, setActiveConversation, deleteConversation } =
     useConversationStore();
@@ -33,16 +54,40 @@ export default function App() {
   const { quizzes, activeQuizId, createQuiz, setActiveQuiz, deleteQuiz } = usePracticeStore();
 
   const handleCopyQuestionToChat = useCallback(
-    (content: string) => {
+    ({
+      content,
+      returnTarget,
+    }: {
+      content: string;
+      returnTarget: PracticeReturnTarget;
+    }) => {
       const normalized = content.trim();
       if (!normalized) return;
       const targetConversationId = activeConversationId ?? conversations[0]?.id ?? createConversation();
+      setPracticeReturnTarget(returnTarget);
       setChatComposerDraft(targetConversationId, normalized);
       setActiveConversation(targetConversationId);
-      setTab("chat");
+      navigateToTab("chat");
     },
-    [activeConversationId, conversations, createConversation, setActiveConversation, setChatComposerDraft],
+    [
+      activeConversationId,
+      conversations,
+      createConversation,
+      navigateToTab,
+      setActiveConversation,
+      setChatComposerDraft,
+    ],
   );
+
+  const consumePracticeReturnTarget = useCallback(() => {
+    setPracticeReturnTarget(null);
+  }, []);
+
+  const handleReturnToPractice = useCallback(() => {
+    if (!practiceReturnTarget) return;
+    setActiveQuiz(practiceReturnTarget.quizId);
+    navigateToTab("practice");
+  }, [navigateToTab, practiceReturnTarget, setActiveQuiz]);
 
   const list =
     tab === "practice" ? (
@@ -55,7 +100,7 @@ export default function App() {
         }}
         onSelect={(id) => {
           setActiveQuiz(id);
-          setTab("practice");
+          navigateToTab("practice");
         }}
         onDelete={(id) => deleteQuiz(id)}
       />
@@ -66,7 +111,7 @@ export default function App() {
         onCreate={() => setNewConversationOpen(true)}
         onSelect={(id) => {
           setActiveConversation(id);
-          setTab("chat");
+          navigateToTab("chat");
         }}
         onDelete={(id) => deleteConversation(id)}
       />
@@ -74,34 +119,37 @@ export default function App() {
 
   const detail =
     tab === "chat" ? (
-      <ChatPage onNewConversation={() => setNewConversationOpen(true)} />
+      <ChatPage
+        onNewConversation={() => setNewConversationOpen(true)}
+        onReturnToPractice={practiceReturnTarget ? handleReturnToPractice : undefined}
+        returnToPracticeLabel={
+          practiceReturnTarget ? `返回第 ${practiceReturnTarget.questionNumber} 题` : undefined
+        }
+      />
     ) : tab === "history" ? (
       <HistoryPage
         onNewConversation={() => setNewConversationOpen(true)}
-        onNavigateChat={() => setTab("chat")}
+        onNavigateChat={() => navigateToTab("chat")}
       />
     ) : tab === "practice" ? (
-      <PracticePage onCopyQuestionToChat={handleCopyQuestionToChat} />
+      <PracticePage
+        onCopyQuestionToChat={handleCopyQuestionToChat}
+        pendingReturnTarget={practiceReturnTarget}
+        onPendingReturnConsumed={consumePracticeReturnTarget}
+      />
     ) : (
       <SettingsPage />
     );
 
   const shell =
     layout === "compact" ? (
-      <PhoneShell tab={tab} onTabChange={setTab}>
+      <PhoneShell tab={tab} onTabChange={navigateToTab}>
         {detail}
       </PhoneShell>
     ) : (
       <TabletShell
         tab={tab}
-        onTabChange={(t) => {
-          setTab(t);
-          if (t === "settings") {
-            setListVisible(false);
-          } else if (layout === "expanded") {
-            setListVisible(true);
-          }
-        }}
+        onTabChange={navigateToTab}
         listVisible={listVisible && tab !== "settings"}
         onToggleList={() => setListVisible((v) => !v)}
         onNewConversation={
@@ -122,7 +170,7 @@ export default function App() {
         onCreate={(agentName) => {
           const id = createConversation({ agentName });
           setActiveConversation(id);
-          setTab("chat");
+          navigateToTab("chat");
           setNewConversationOpen(false);
         }}
       />

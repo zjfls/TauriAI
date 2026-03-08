@@ -1,25 +1,179 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
-import { Plus, Wand2 } from "lucide-react";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { MessageSquareText, Plus, Trash2, Wand2 } from "lucide-react";
 import { useConfigStore } from "../../stores/configStore";
-import { resolvePracticeAgentPresentation, SYSTEM_PRACTICE_AGENT_LABEL } from "../../../../common/src/agentUtils";
+import { useSessionStore } from "../../stores/sessionStore";
+import { useUIStore } from "../../stores/uiStore";
+import {
+  filterNonPracticeAgents,
+  resolvePracticeAgentPresentation,
+  SYSTEM_PRACTICE_AGENT_LABEL,
+} from "../../../../common/src/agentUtils";
 import { MarkdownRenderer } from "../Chat/MarkdownRenderer";
 import { usePracticeStore } from "../../../../common/src/practice/store";
-import type { PracticeQuestion, PracticeQuestionType, PracticeQuiz } from "../../../../common/src/practice/types";
-import { generatePracticeQuiz, generatePracticeTitle, gradePracticeAnswer } from "../../../../common/src/practice/llm";
+import type {
+  InkPoint,
+  InkState,
+  InkStroke,
+  PracticeAnswer,
+  PracticeQuestion,
+  PracticeQuestionProgress,
+  PracticeQuestionType,
+  PracticeQuiz,
+} from "../../../../common/src/practice/types";
+import {
+  generatePracticeQuiz,
+  generatePracticeTitle,
+  gradePracticeAnswer,
+} from "../../../../common/src/practice/llm";
 import {
   DEFAULT_PRACTICE_GENERATION_COUNTS,
   PRACTICE_GENERATION_FIELDS,
   normalizePracticeGenerationCountValue,
   totalPracticeGenerationCounts,
 } from "../../../../common/src/practice/generation";
-import { ScrollableInkPad, createEmptyInkState } from "../../../../common/src/practice/ink/ScrollableInkPad";
+import {
+  ScrollableInkPad,
+  createEmptyInkState,
+} from "../../../../common/src/practice/ink/ScrollableInkPad";
+import { buildPracticeQuestionChatPrompt } from "../../../../common/src/practice/chatPrompt";
+import {
+  buildPracticeChoiceGrading,
+  buildPracticeQuizGrading,
+  buildPracticeUnansweredGrading,
+} from "../../../../common/src/practice/grading";
+import { focusMainWindow } from "../../utils/viewWindow";
 
 function questionTypeLabel(t: PracticeQuestionType): string {
   if (t === "multiple_choice") return "选择题";
   if (t === "calculation") return "计算题";
   if (t === "proof") return "证明题";
   return "问答题";
+}
+
+function drawInkSegment(
+  ctx: CanvasRenderingContext2D,
+  stroke: InkStroke,
+  a: InkPoint,
+  b: InkPoint,
+) {
+  const rawSize =
+    typeof stroke.size === "number" && Number.isFinite(stroke.size)
+      ? stroke.size
+      : 1;
+  const baseSize = Math.max(0.5, Math.min(64, rawSize));
+  const opacity =
+    typeof stroke.opacity === "number"
+      ? Math.max(0.05, Math.min(1, stroke.opacity))
+      : stroke.tool === "pencil"
+        ? 0.65
+        : 1;
+  const pressureSensitivity =
+    typeof stroke.pressureSensitivity === "number"
+      ? Math.max(0, Math.min(1, stroke.pressureSensitivity))
+      : 0;
+  const pressure = Math.max(
+    0.1,
+    Math.min(
+      1,
+      (typeof b.pressure === "number" && b.pressure > 0
+        ? b.pressure
+        : undefined) ??
+        (typeof a.pressure === "number" && a.pressure > 0
+          ? a.pressure
+          : undefined) ??
+        0.5,
+    ),
+  );
+  const lineWidth =
+    stroke.tool === "eraser"
+      ? Math.max(1, baseSize)
+      : Math.max(
+          1,
+          baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure),
+        );
+
+  ctx.save();
+  if (stroke.tool === "eraser") {
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.strokeStyle = "rgba(0,0,0,1)";
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.globalCompositeOperation = stroke.blendMode ?? "source-over";
+    ctx.strokeStyle = stroke.color || "#111827";
+    ctx.globalAlpha = opacity;
+  }
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = stroke.lineCap ?? "round";
+  ctx.lineJoin = stroke.lineJoin ?? "round";
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  ctx.lineTo(b.x, b.y);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function computeInkBounds(
+  strokes: InkStroke[],
+): { minX: number; minY: number; maxX: number; maxY: number } | null {
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const stroke of strokes) {
+    for (const point of stroke.points) {
+      minX = Math.min(minX, point.x);
+      minY = Math.min(minY, point.y);
+      maxX = Math.max(maxX, point.x);
+      maxY = Math.max(maxY, point.y);
+    }
+  }
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(minY) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(maxY)
+  ) {
+    return null;
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+async function renderInkToDataUrl(ink: InkState): Promise<string | null> {
+  if (typeof document === "undefined") return null;
+  const strokes = Array.isArray(ink?.strokes) ? ink.strokes : [];
+  if (strokes.length === 0) return null;
+  const bounds = computeInkBounds(strokes);
+  if (!bounds) return null;
+
+  const margin = 24;
+  const width = Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2));
+  const height = Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2));
+  const maxEdge = Math.max(width, height);
+  const scale = maxEdge > 1536 ? 1536 / maxEdge : 1;
+  const outW = Math.max(1, Math.round(width * scale));
+  const outH = Math.max(1, Math.round(height * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW;
+  canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, outW / scale, outH / scale);
+  ctx.translate(margin - bounds.minX, margin - bounds.minY);
+
+  for (const stroke of strokes) {
+    const points = stroke.points || [];
+    if (points.length < 2) continue;
+    for (let index = 1; index < points.length; index += 1) {
+      drawInkSegment(ctx, stroke, points[index - 1]!, points[index]!);
+    }
+  }
+  return canvas.toDataURL("image/png");
 }
 
 export function PracticeView() {
@@ -30,30 +184,297 @@ export function PracticeView() {
   const deleteQuiz = usePracticeStore((s) => s.deleteQuiz);
   const renameQuiz = usePracticeStore((s) => s.renameQuiz);
 
-  const appendGeneratedQuestions = usePracticeStore((s) => s.appendGeneratedQuestions);
+  const replaceGeneratedQuestions = usePracticeStore(
+    (s) => s.replaceGeneratedQuestions,
+  );
   const setAnswer = usePracticeStore((s) => s.setAnswer);
   const setInkDraft = usePracticeStore((s) => s.setInkDraft);
   const setGrading = usePracticeStore((s) => s.setGrading);
+  const setQuizGrading = usePracticeStore((s) => s.setQuizGrading);
   const clearQuestionResult = usePracticeStore((s) => s.clearQuestionResult);
 
+  const sessions = useSessionStore((s) => s.sessions);
+  const activeSessionId = useSessionStore((s) => s.activeSessionId);
+  const createSession = useSessionStore((s) => s.createSession);
+  const switchSession = useSessionStore((s) => s.switchSession);
+  const setSessionDraftContent = useSessionStore(
+    (s) => s.setSessionDraftContent,
+  );
+  const setActiveView = useUIStore((s) => s.setActiveView);
+
   const config = useConfigStore((s) => s.config);
-  const practiceAgent = useMemo(() => resolvePracticeAgentPresentation(config), [config]);
+  const practiceAgent = useMemo(
+    () => resolvePracticeAgentPresentation(config),
+    [config],
+  );
 
   const quiz = useMemo(
     () => quizzes.find((q) => q.id === activeQuizId) ?? quizzes[0],
     [quizzes, activeQuizId],
   );
+  const quizGrading = quiz?.progress?.quizGrading;
 
   const [topic, setTopic] = useState("");
-  const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">("medium");
+  const [difficulty, setDifficulty] = useState<"easy" | "medium" | "hard">(
+    "medium",
+  );
   const [genBusy, setGenBusy] = useState(false);
   const [genError, setGenError] = useState<string>("");
-  const [questionCounts, setQuestionCounts] = useState(DEFAULT_PRACTICE_GENERATION_COUNTS);
+  const [questionCounts, setQuestionCounts] = useState(
+    DEFAULT_PRACTICE_GENERATION_COUNTS,
+  );
+  const [quizTitleDraft, setQuizTitleDraft] = useState(quiz?.title ?? "");
 
-  const totalQuestionCount = useMemo(() => totalPracticeGenerationCounts(questionCounts), [questionCounts]);
+  const totalQuestionCount = useMemo(
+    () => totalPracticeGenerationCounts(questionCounts),
+    [questionCounts],
+  );
 
   const [gradeBusy, setGradeBusy] = useState<Record<string, boolean>>({});
   const [gradeError, setGradeError] = useState<Record<string, string>>({});
+  const [copyQuestionToChatBusy, setCopyQuestionToChatBusy] = useState<
+    Record<string, boolean>
+  >({});
+  const [quizSubmitBusy, setQuizSubmitBusy] = useState(false);
+  const [quizSubmitError, setQuizSubmitError] = useState("");
+
+  useEffect(() => {
+    setQuizTitleDraft(quiz?.title ?? "");
+  }, [quiz?.id, quiz?.title]);
+
+  useEffect(() => {
+    setQuizSubmitBusy(false);
+    setQuizSubmitError("");
+  }, [quiz?.id]);
+
+  const defaultChatAgentName = useMemo(() => {
+    const visibleAgents = filterNonPracticeAgents(config?.agents || []);
+    const configuredDefault = String(config?.defaultAgent ?? "").trim();
+    if (
+      configuredDefault &&
+      visibleAgents.some((agent) => agent.name === configuredDefault)
+    ) {
+      return configuredDefault;
+    }
+    return visibleAgents[0]?.name ?? "";
+  }, [config]);
+
+  const commitQuizTitleDraft = useCallback(() => {
+    if (!quiz) return;
+    const normalized = quizTitleDraft.trim();
+    if (!normalized) {
+      setQuizTitleDraft(quiz.title || "");
+      return;
+    }
+    if (normalized !== quiz.title) {
+      renameQuiz(quiz.id, normalized);
+    }
+  }, [quiz, quizTitleDraft, renameQuiz]);
+
+  const confirmDeleteQuiz = useCallback(
+    (quizId: string, title?: string) => {
+      const label = title?.trim() || "未命名练习";
+      if (!window.confirm(`确定删除练习“${label}”吗？`)) return;
+      deleteQuiz(quizId);
+    },
+    [deleteQuiz],
+  );
+
+  const copyQuestionToChat = useCallback(
+    async (question: PracticeQuestion) => {
+      setCopyQuestionToChatBusy((prev) => ({ ...prev, [question.id]: true }));
+      const prompt = buildPracticeQuestionChatPrompt(question);
+      try {
+        await navigator.clipboard.writeText(prompt);
+      } catch {
+        // ignore clipboard fallback errors
+      }
+
+      try {
+        if (!isTauri()) {
+          let targetSessionId = (activeSessionId ?? "").trim();
+          if (!targetSessionId || !sessions.has(targetSessionId)) {
+            const firstSessionId = sessions.keys().next().value as
+              | string
+              | undefined;
+            targetSessionId =
+              firstSessionId && sessions.has(firstSessionId)
+                ? firstSessionId
+                : "";
+          }
+          if (!targetSessionId) {
+            if (!defaultChatAgentName) {
+              throw new Error("未配置可用于聊天的 Agent");
+            }
+            targetSessionId = await createSession(defaultChatAgentName);
+          }
+          setSessionDraftContent(targetSessionId, prompt);
+          switchSession(targetSessionId);
+          setActiveView("chat");
+        } else {
+          await focusMainWindow();
+          const mainWin = await WebviewWindow.getByLabel("main").catch(
+            () => null,
+          );
+          if (!mainWin) {
+            throw new Error("未找到主聊天窗口");
+          }
+          await mainWin.emit("chat:set_draft_text", { text: prompt });
+        }
+      } catch (error) {
+        console.error("Failed to copy practice question to chat:", error);
+      } finally {
+        setCopyQuestionToChatBusy((prev) => ({
+          ...prev,
+          [question.id]: false,
+        }));
+      }
+    },
+    [
+      activeSessionId,
+      createSession,
+      defaultChatAgentName,
+      sessions,
+      setActiveView,
+      setSessionDraftContent,
+      switchSession,
+    ],
+  );
+
+  const evaluateQuestion = useCallback(
+    async (
+      question: PracticeQuestion,
+      answer: PracticeAnswer | undefined,
+      opts?: { allowBlank?: boolean },
+    ) => {
+      if (question.type === "multiple_choice") {
+        return buildPracticeChoiceGrading(
+          question,
+          answer?.kind === "choice" ? answer.optionId : "",
+        );
+      }
+
+      const text =
+        answer?.kind === "text"
+          ? answer.text
+          : answer?.kind === "ink"
+            ? answer.summaryText || ""
+            : "";
+      const renderedInkImage =
+        answer?.kind === "ink" ? await renderInkToDataUrl(answer.ink) : null;
+      const studentAnswerImages = renderedInkImage
+        ? [
+            {
+              type: "image" as const,
+              url: renderedInkImage,
+              detail: "high" as const,
+            },
+          ]
+        : [];
+
+      if (!text.trim() && studentAnswerImages.length === 0) {
+        if (opts?.allowBlank) {
+          return buildPracticeUnansweredGrading(
+            question,
+            "未作答，当前题记 0 分。",
+          );
+        }
+        throw new Error("请先在手写区作答或填写文字答案后再提交");
+      }
+      if (!isTauri()) {
+        throw new Error(
+          "当前在浏览器预览模式，无法调用后端批改。请在 App 内运行。",
+        );
+      }
+      return await gradePracticeAnswer(invoke as any, {
+        question,
+        studentAnswer: text,
+        studentAnswerImages:
+          studentAnswerImages.length > 0 ? studentAnswerImages : undefined,
+      });
+    },
+    [],
+  );
+
+  const submitQuestion = useCallback(
+    async (
+      quizId: string,
+      question: PracticeQuestion,
+      progress: PracticeQuestionProgress | undefined,
+      opts?: { allowBlank?: boolean; reuseExisting?: boolean },
+    ) => {
+      setGradeError((prev) => ({ ...prev, [question.id]: "" }));
+      if ((opts?.reuseExisting ?? true) && progress?.grading) {
+        return progress.grading;
+      }
+
+      const shouldTrackBusy = question.type !== "multiple_choice";
+      if (shouldTrackBusy) {
+        setGradeBusy((prev) => ({ ...prev, [question.id]: true }));
+      }
+
+      try {
+        const grading = await evaluateQuestion(question, progress?.answer, {
+          allowBlank: opts?.allowBlank,
+        });
+        setGrading(quizId, question.id, grading);
+        return grading;
+      } catch (e: any) {
+        const message = String(e?.message ?? e ?? "批改失败");
+        setGradeError((prev) => ({ ...prev, [question.id]: message }));
+        throw e;
+      } finally {
+        if (shouldTrackBusy) {
+          setGradeBusy((prev) => ({ ...prev, [question.id]: false }));
+        }
+      }
+    },
+    [evaluateQuestion, setGrading],
+  );
+
+  const submitQuiz = useCallback(async () => {
+    if (!quiz || quiz.questions.length === 0 || quizSubmitBusy) return;
+
+    setQuizSubmitError("");
+    setQuizSubmitBusy(true);
+    try {
+      const nextByQuestionId: Record<string, PracticeQuestionProgress> = {
+        ...(quiz.progress?.byQuestionId ?? {}),
+      };
+      const failures: string[] = [];
+
+      for (const [index, question] of quiz.questions.entries()) {
+        const progress = nextByQuestionId[question.id];
+        try {
+          const grading = await submitQuestion(quiz.id, question, progress, {
+            allowBlank: true,
+            reuseExisting: true,
+          });
+          nextByQuestionId[question.id] = {
+            ...(progress ?? {}),
+            grading,
+            submittedAt: grading.gradedAt,
+          };
+        } catch (error: any) {
+          failures.push(
+            `第${index + 1}题：${String(error?.message ?? error ?? "批改失败")}`,
+          );
+        }
+      }
+
+      if (failures.length > 0) {
+        setQuizSubmitError(`整体提交未完成：${failures.join("；")}`);
+        return;
+      }
+
+      setQuizGrading(
+        quiz.id,
+        buildPracticeQuizGrading(quiz.questions, nextByQuestionId),
+      );
+    } finally {
+      setQuizSubmitBusy(false);
+    }
+  }, [quiz, quizSubmitBusy, setQuizGrading, submitQuestion]);
 
   const onGenerate = async () => {
     const t = topic.trim();
@@ -67,14 +488,17 @@ export function PracticeView() {
     }
     setGenError("");
     if (!isTauri()) {
-      setGenError("当前在浏览器预览模式，无法调用后端生成题目。请在 App 内运行。");
+      setGenError(
+        "当前在浏览器预览模式，无法调用后端生成题目。请在 App 内运行。",
+      );
       return;
     }
     if (genBusy) return;
     setGenBusy(true);
     try {
       const shouldAutoRenameQuiz =
-        quiz.questions.length === 0 && (!quiz.title.trim() || quiz.title.trim() === "新练习");
+        quiz.questions.length === 0 &&
+        (!quiz.title.trim() || quiz.title.trim() === "新练习");
       const generated = await generatePracticeQuiz(invoke as any, {
         options: {
           topic: t,
@@ -82,7 +506,7 @@ export function PracticeView() {
           counts: questionCounts,
         },
       });
-      appendGeneratedQuestions(quiz.id, generated.questions);
+      replaceGeneratedQuestions(quiz.id, generated.questions);
       if (shouldAutoRenameQuiz) {
         const nextTitle = await generatePracticeTitle(invoke as any, {
           topic: t,
@@ -99,7 +523,11 @@ export function PracticeView() {
     }
   };
 
-  const renderQuestion = (q: PracticeQuestion, index: number, quiz2: PracticeQuiz) => {
+  const renderQuestion = (
+    q: PracticeQuestion,
+    index: number,
+    quiz2: PracticeQuiz,
+  ) => {
     const progress = quiz2.progress?.byQuestionId?.[q.id];
     const grading = progress?.grading;
     const answer = progress?.answer;
@@ -107,54 +535,19 @@ export function PracticeView() {
 
     const busy = Boolean(gradeBusy[q.id]);
     const err = gradeError[q.id] || "";
+    const chatCopyBusy = Boolean(copyQuestionToChatBusy[q.id]);
+
+    const gradingExplanation = grading?.explanation?.trim() || "";
 
     const submit = async () => {
-      setGradeError((prev) => ({ ...prev, [q.id]: "" }));
-
-      if (q.type === "multiple_choice") {
-        const optionId = answer?.kind === "choice" ? answer.optionId : "";
-        const maxScore = q.points;
-        const score = optionId && optionId === q.correctOptionId ? maxScore : 0;
-        setGrading(quiz2.id, q.id, {
-          score,
-          maxScore,
-          explanation: q.explanation || `正确答案：${q.correctOptionId}`,
-          gradedAt: Date.now(),
-        });
-        return;
-      }
-
-      const text =
-        answer?.kind === "text"
-          ? answer.text
-          : answer?.kind === "ink"
-            ? answer.summaryText || ""
-            : "";
-
-      if (!text.trim()) {
-        setGradeError((prev) => ({ ...prev, [q.id]: "请先写一句总结/关键步骤（用于批改）" }));
-        return;
-      }
-      if (!isTauri()) {
-        setGradeError((prev) => ({
-          ...prev,
-          [q.id]: "当前在浏览器预览模式，无法调用后端批改。请在 App 内运行。",
-        }));
-        return;
-      }
-      if (busy) return;
-
-      setGradeBusy((prev) => ({ ...prev, [q.id]: true }));
+      if (busy || quizSubmitBusy) return;
       try {
-        const res = await gradePracticeAnswer(invoke as any, {
-          question: q,
-          studentAnswer: text,
+        await submitQuestion(quiz2.id, q, progress, {
+          allowBlank: false,
+          reuseExisting: false,
         });
-        setGrading(quiz2.id, q.id, res);
-      } catch (e: any) {
-        setGradeError((prev) => ({ ...prev, [q.id]: String(e?.message ?? e ?? "批改失败") }));
-      } finally {
-        setGradeBusy((prev) => ({ ...prev, [q.id]: false }));
+      } catch {
+        // per-question error has already been recorded above
       }
     };
 
@@ -170,25 +563,43 @@ export function PracticeView() {
       >
         <div className="flex items-start gap-3">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                 {index + 1}. {questionTypeLabel(q.type)}
               </div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">{q.points} 分</div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                {q.points} 分
+              </div>
+              <div className="no-window-drag ml-auto flex items-center gap-2">
+                <button
+                  type="button"
+                  className={[
+                    "inline-flex h-8 items-center gap-1 rounded-lg border px-3 text-xs transition-colors",
+                    chatCopyBusy
+                      ? "border-sky-300/50 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+                      : "border-gray-200 bg-white text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800",
+                  ].join(" ")}
+                  onClick={() => void copyQuestionToChat(q)}
+                  disabled={chatCopyBusy}
+                  title="放入聊天输入框"
+                >
+                  <MessageSquareText size={14} />
+                  {chatCopyBusy ? "处理中…" : "问聊天"}
+                </button>
+              </div>
             </div>
             <div className="mt-2 prose prose-sm max-w-none dark:prose-invert">
               <MarkdownRenderer content={q.prompt || "（题目为空）"} />
             </div>
-
           </div>
-
         </div>
 
         <div className="mt-3 grid gap-3">
           {q.type === "multiple_choice" ? (
             <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
               {q.options.map((opt) => {
-                const selected = answer?.kind === "choice" && answer.optionId === opt.id;
+                const selected =
+                  answer?.kind === "choice" && answer.optionId === opt.id;
                 return (
                   <button
                     key={opt.id}
@@ -223,44 +634,28 @@ export function PracticeView() {
               className="w-full min-h-[120px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
               value={answer?.kind === "text" ? answer.text : ""}
               onChange={(e) => {
-                setAnswer(quiz2.id, q.id, { kind: "text", text: e.target.value });
+                setAnswer(quiz2.id, q.id, {
+                  kind: "text",
+                  text: e.target.value,
+                });
                 if (submitted) clearQuestionResult(quiz2.id, q.id);
               }}
               placeholder="在这里作答…"
             />
           ) : (
-            <>
-              <div className="h-64">
-                <ScrollableInkPad
-                  value={
-                    answer?.kind === "ink"
-                      ? answer.ink
-                      : createEmptyInkState()
-                  }
-                  onChange={(nextInk) => {
-                    setInkDraft(quiz2.id, q.id, nextInk, {
-                      summaryText: answer?.kind === "ink" ? answer.summaryText : "",
-                      commit: true,
-                    });
-                    if (submitted) clearQuestionResult(quiz2.id, q.id);
-                  }}
-                  template="ruled"
-                />
-              </div>
-              <textarea
-                className="w-full min-h-[100px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                value={answer?.kind === "ink" ? answer.summaryText || "" : ""}
-                onChange={(e) => {
-                  const ink =
-                    answer?.kind === "ink"
-                      ? answer.ink
-                      : createEmptyInkState();
-                  setInkDraft(quiz2.id, q.id, ink, { summaryText: e.target.value, commit: true });
+            <div className="h-64">
+              <ScrollableInkPad
+                value={
+                  answer?.kind === "ink" ? answer.ink : createEmptyInkState()
+                }
+                onChange={(nextInk) => {
+                  setInkDraft(quiz2.id, q.id, nextInk, { commit: true });
                   if (submitted) clearQuestionResult(quiz2.id, q.id);
                 }}
-                placeholder="答案总结（用于批改，可写关键步骤/结论）…"
+                template="ruled"
+                viewportClassName="scrollbar-hidden"
               />
-            </>
+            </div>
           )}
 
           <div className="flex items-center gap-2">
@@ -268,20 +663,15 @@ export function PracticeView() {
               type="button"
               className="h-9 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm disabled:opacity-50"
               onClick={submit}
-              disabled={busy}
+              disabled={busy || quizSubmitBusy}
             >
-              {busy ? "批改中…" : "提交并查看讲解/得分"}
+              {busy ? "批改中…" : "查看解答"}
             </button>
-            {grading ? (
-              <button
-                type="button"
-                className="h-9 px-3 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-800 text-sm dark:bg-gray-700 dark:hover:bg-gray-600 dark:text-gray-100"
-                onClick={() => clearQuestionResult(quiz2.id, q.id)}
-              >
-                重新作答
-              </button>
+            {err ? (
+              <div className="text-sm text-red-600 dark:text-red-400">
+                {err}
+              </div>
             ) : null}
-            {err ? <div className="text-sm text-red-600 dark:text-red-400">{err}</div> : null}
           </div>
 
           {grading ? (
@@ -289,16 +679,20 @@ export function PracticeView() {
               <div className="text-sm font-semibold text-indigo-800 dark:text-indigo-200">
                 得分：{grading.score} / {grading.maxScore}
               </div>
-              <div className="mt-2 prose prose-sm max-w-none dark:prose-invert">
-                <MarkdownRenderer content={grading.explanation || "（无讲解）"} />
-              </div>
+              {gradingExplanation ? (
+                <div className="mt-2 prose prose-sm max-w-none dark:prose-invert">
+                  <MarkdownRenderer content={gradingExplanation} />
+                </div>
+              ) : null}
               {q.type !== "multiple_choice" ? (
                 <details className="mt-2">
                   <summary className="cursor-pointer text-sm text-indigo-800 dark:text-indigo-200">
                     查看参考答案
                   </summary>
                   <div className="mt-2 prose prose-sm max-w-none dark:prose-invert">
-                    <MarkdownRenderer content={(q as any).referenceAnswer || "（无）"} />
+                    <MarkdownRenderer
+                      content={(q as any).referenceAnswer || "（无）"}
+                    />
                   </div>
                 </details>
               ) : null}
@@ -336,22 +730,44 @@ export function PracticeView() {
 
         <div className="p-2 grid gap-1">
           {quizzes.map((q) => (
-            <button
+            <div
               key={q.id}
-              type="button"
+              role="button"
+              tabIndex={0}
               className={[
-                "w-full text-left px-3 py-2 rounded-lg transition-colors",
-                (q.id === quiz.id)
+                "group flex items-center justify-between gap-2 rounded-lg px-3 py-2 transition-colors",
+                q.id === quiz.id
                   ? "bg-indigo-500/10 text-indigo-700 dark:text-indigo-200"
-                  : "hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-100",
+                  : "text-gray-800 hover:bg-gray-100 dark:text-gray-100 dark:hover:bg-gray-700",
               ].join(" ")}
               onClick={() => setActiveQuiz(q.id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setActiveQuiz(q.id);
+                }
+              }}
             >
-              <div className="text-sm font-medium truncate">{q.title || "未命名"}</div>
-              <div className="text-xs text-gray-500 dark:text-gray-400">
-                {q.questions.length} 题
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium truncate">
+                  {q.title || "未命名"}
+                </div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  {q.questions.length} 题
+                </div>
               </div>
-            </button>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-md bg-gray-100 text-gray-500 transition-colors hover:bg-gray-200 hover:text-red-600 dark:bg-gray-700/80 dark:text-gray-300 dark:hover:bg-gray-600 dark:hover:text-red-300"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  confirmDeleteQuiz(q.id, q.title);
+                }}
+                title="删除"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
           ))}
         </div>
       </aside>
@@ -360,15 +776,28 @@ export function PracticeView() {
         <div className="max-w-4xl mx-auto p-5 grid gap-5">
           <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
             <div className="flex items-start gap-3">
-              <input
-                className="flex-1 min-w-0 h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                value={quiz.title}
-                onChange={(e) => renameQuiz(quiz.id, e.target.value)}
-              />
+              <div className="flex-1 min-w-0">
+                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                  练习名称
+                </div>
+                <input
+                  className="w-full min-w-0 h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                  value={quizTitleDraft}
+                  onChange={(e) => setQuizTitleDraft(e.target.value)}
+                  onBlur={commitQuizTitleDraft}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitQuizTitleDraft();
+                    }
+                  }}
+                  placeholder="输入练习名称"
+                />
+              </div>
               <button
                 type="button"
                 className="h-10 px-3 rounded-lg bg-red-500/15 text-sm text-red-600 transition-colors hover:bg-red-500/25 dark:text-red-200"
-                onClick={() => deleteQuiz(quiz.id)}
+                onClick={() => confirmDeleteQuiz(quiz.id, quiz.title)}
                 title="删除该练习"
               >
                 删除
@@ -377,20 +806,28 @@ export function PracticeView() {
 
             <div className="mt-3 grid gap-3">
               <div>
-                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">练习专用 Agent</div>
+                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
+                  练习专用 Agent
+                </div>
                 <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/70">
                   <div className="text-sm text-gray-900 dark:text-gray-100">
                     {practiceAgent.label || SYSTEM_PRACTICE_AGENT_LABEL}
-                    <span className="ml-2 text-[11px] text-indigo-600 dark:text-indigo-300">系统内置</span>
+                    <span className="ml-2 text-[11px] text-indigo-600 dark:text-indigo-300">
+                      系统内置
+                    </span>
                   </div>
                   <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {practiceAgent.modelLabel ? `模型：${practiceAgent.modelLabel}` : "模型：未配置"}
+                    {practiceAgent.modelLabel
+                      ? `模型：${practiceAgent.modelLabel}`
+                      : "模型：未配置"}
                   </div>
                 </div>
               </div>
 
               <div className="grid gap-2">
-                <div className="text-xs text-gray-500 dark:text-gray-400">AI 出题主题</div>
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  AI 出题主题
+                </div>
                 <input
                   className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                   value={topic}
@@ -404,7 +841,9 @@ export function PracticeView() {
                       key={field.type}
                       className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-gray-900 dark:border-gray-700 dark:bg-gray-900/70 dark:text-gray-100"
                     >
-                      <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">{field.label}</span>
+                      <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">
+                        {field.label}
+                      </span>
                       <input
                         type="number"
                         min={0}
@@ -416,7 +855,10 @@ export function PracticeView() {
                         onChange={(e) =>
                           setQuestionCounts((prev) => ({
                             ...prev,
-                            [field.type]: normalizePracticeGenerationCountValue(e.target.value, prev[field.type]),
+                            [field.type]: normalizePracticeGenerationCountValue(
+                              e.target.value,
+                              prev[field.type],
+                            ),
                           }))
                         }
                       />
@@ -451,12 +893,13 @@ export function PracticeView() {
                 </div>
 
                 {genError ? (
-                  <div className="text-sm text-red-600 dark:text-red-400">{genError}</div>
+                  <div className="text-sm text-red-600 dark:text-red-400">
+                    {genError}
+                  </div>
                 ) : null}
               </div>
             </div>
           </div>
-
 
           {quiz.questions.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 p-8 text-center text-gray-500 dark:border-gray-700 dark:text-gray-400">
@@ -465,6 +908,48 @@ export function PracticeView() {
           ) : (
             <div className="grid gap-4">
               {quiz.questions.map((q, i) => renderQuestion(q, i, quiz))}
+
+              <div className="rounded-xl border border-indigo-200 bg-white p-4 shadow-sm dark:border-indigo-500/20 dark:bg-gray-800">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                      整体提交练习
+                    </div>
+                    <div className="text-sm text-gray-500 dark:text-gray-400">
+                      按当前整套题目汇总总分与整体批阅。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="h-10 rounded-lg bg-indigo-600 px-4 text-sm text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+                    onClick={() => void submitQuiz()}
+                    disabled={quizSubmitBusy}
+                  >
+                    {quizSubmitBusy ? "整体提交中…" : "整体提交并汇总得分"}
+                  </button>
+                </div>
+
+                {quizSubmitError ? (
+                  <div className="mt-3 text-sm text-red-600 dark:text-red-400">
+                    {quizSubmitError}
+                  </div>
+                ) : null}
+
+                {quizGrading ? (
+                  <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 p-4 dark:border-indigo-500/30 dark:bg-indigo-900/20">
+                    <div className="text-lg font-semibold text-indigo-800 dark:text-indigo-100">
+                      总分：{quizGrading.score} / {quizGrading.maxScore}
+                    </div>
+                    <div className="mt-1 text-sm text-indigo-700 dark:text-indigo-200">
+                      已批改 {quizGrading.gradedQuestions} /{" "}
+                      {quizGrading.totalQuestions} 题
+                    </div>
+                    <div className="mt-3 prose prose-sm max-w-none dark:prose-invert">
+                      <MarkdownRenderer content={quizGrading.explanation} />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           )}
         </div>

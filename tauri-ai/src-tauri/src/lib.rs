@@ -1482,6 +1482,7 @@ fn run_desktop() {
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn run_mobile() {
     use crate::commands::{
+        clipboard_write_png_base64,
         // MCP commands (mobile)
         delete_mcp_server,
         delete_mcp_set,
@@ -1522,6 +1523,7 @@ fn run_mobile() {
             mobile_generate_title,
             practice_chat,
             practice_generate_title,
+            clipboard_write_png_base64,
             mobile_chat_stream_start,
             mobile_chat_stream_cancel,
             // MCP commands

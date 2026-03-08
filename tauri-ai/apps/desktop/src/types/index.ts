@@ -1299,6 +1299,7 @@ export interface WebSearchToolSettings {
 // ============================================================================
 
 export type KeyboardShortcutActionId =
+  | 'app.openPractice'
   | 'app.openSettings'
   | 'app.openHistory'
   | 'app.openDevtools'

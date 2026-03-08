@@ -58,18 +58,13 @@ button {
   overflow: visible;
 }
 
+/* Do not turn inline KaTeX into an overflow container on mobile.
+   That changes inline baseline calculation and makes formulas sit higher than surrounding text. */
 .katex {
-  display: inline-block;
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
-  scrollbar-width: none;
-}
-
-.katex::-webkit-scrollbar {
-  display: none;
+  display: inline;
+  max-width: none;
+  overflow: visible;
+  vertical-align: baseline;
 }
 
 /* iOS/Android safe-area helpers (mainly affects iPhone with home indicator). */
