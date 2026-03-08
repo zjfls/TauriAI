@@ -29,3 +29,12 @@ details > *:not(summary) {
 .monaco-editor .tauri-ai-chatwith-gutter {
   border-left: 3px solid rgba(34, 197, 94, 0.9);
 }
+
+.workstudio-view .monaco-editor .quick-input-widget {
+  left: 50% !important;
+  right: auto !important;
+  width: min(600px, calc(100% - 16px));
+  max-width: calc(100% - 16px);
+  margin-left: 0;
+  transform: translateX(-50%);
+}
