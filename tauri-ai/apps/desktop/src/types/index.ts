@@ -149,8 +149,8 @@ export type TextEditImplementation =
   | 'apply_patch_unified_diff'
   | 'write_file_replace_string';
 
-/** Agent 子任务工具实现类型（agenttask） */
-export type AgentTaskImplementation = 'in_process' | 'subprocess';
+/** 内部 TaskAgent 执行实现类型（供 `subagent_call` 的 internal 目标使用） */
+export type InternalAgentImplementation = 'in_process' | 'subprocess';
 /** Shell 工具实现类型（由模型决定） */
 export type ShellImplementation = 'shell_command' | 'pty' | 'pty_persistent';
 
@@ -176,8 +176,8 @@ export interface Model {
   reinjectReasoningContent?: boolean; // Kimi thinking: include historical reasoning_content in request (default: false)
   /** 文本编辑工具实现偏好（默认 apply_patch） */
   textEditImplementation?: TextEditImplementation;
-  /** Agent 子任务工具实现偏好（默认 in_process） */
-  agentTaskImplementation?: AgentTaskImplementation;
+  /** 内部 TaskAgent 执行实现偏好（默认 in_process） */
+  internalAgentImplementation?: InternalAgentImplementation;
   /** Shell 工具实现偏好（默认 shell_command） */
   shellImplementation?: ShellImplementation;
 }

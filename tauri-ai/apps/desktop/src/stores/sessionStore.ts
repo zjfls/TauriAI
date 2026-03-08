@@ -2474,8 +2474,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	          (item, index) =>
 	            item.id === next[index]?.id &&
 	            item.type === next[index]?.type &&
+            item.label === next[index]?.label &&
 	            item.filePath === next[index]?.filePath &&
-	            item.language === next[index]?.language &&
+            item.languageId === next[index]?.languageId &&
 	            item.range?.startLine === next[index]?.range?.startLine &&
 	            item.range?.startColumn === next[index]?.range?.startColumn &&
 	            item.range?.endLine === next[index]?.range?.endLine &&

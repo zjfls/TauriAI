@@ -36,7 +36,7 @@ use crate::runtime::tools::spec::ToolSpec;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::storage::{async_db, Database};
 
-pub const AGENT_RUN_TOOL_NAME: &str = "agent_run";
+const EXTERNAL_ONCE_TOOL_LABEL: &str = "subagent_call(external)";
 pub const AGENT_SESSION_TOOL_NAME: &str = "agent_session";
 
 const STDERR_TAIL_LIMIT: usize = 24;
@@ -46,25 +46,27 @@ const WAIT_TIMEOUT_BUFFER_MS: u64 = 8_000;
 const SESSION_PREVIEW_LIMIT: usize = 240;
 const SESSION_STORE_VERSION: u32 = 2;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AgentRunArgs {
+pub(crate) struct ExternalAgentOnceRequest {
     #[serde(default)]
-    prompt: Option<String>,
+    pub(crate) prompt: Option<String>,
     #[serde(default)]
-    content: Option<String>,
+    pub(crate) content: Option<String>,
     #[serde(default)]
-    agent_name: Option<String>,
+    pub(crate) target: Option<String>,
     #[serde(default)]
-    model_ref: Option<String>,
+    pub(crate) agent_name: Option<String>,
     #[serde(default)]
-    run_mode: Option<String>,
+    pub(crate) model_ref: Option<String>,
     #[serde(default)]
-    thinking: Option<Value>,
+    pub(crate) run_mode: Option<String>,
     #[serde(default)]
-    timeout_ms: Option<u64>,
+    pub(crate) thinking: Option<Value>,
     #[serde(default)]
-    cwd: Option<String>,
+    pub(crate) timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub(crate) cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -95,6 +97,8 @@ struct AgentSessionArgs {
     action: AgentSessionAction,
     #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
     #[serde(default)]
     agent_name: Option<String>,
     #[serde(default)]
@@ -327,40 +331,13 @@ struct HeadlessInvocationOutput {
     exit_code: Option<i32>,
 }
 
-pub struct AgentRunTool;
 pub struct AgentSessionTool;
-
-fn build_agent_run_spec() -> ToolSpec {
-    ToolSpec {
-        name: AGENT_RUN_TOOL_NAME.to_string(),
-        description: Some(
-            "执行一次性的外部 agent 委托。适合隔离的单次子任务；输入 external agent 名称与 prompt，返回结构化结果。"
-                .to_string(),
-        ),
-        parameters: json!({
-            "type": "object",
-            "properties": {
-                "agent_name": { "type": "string", "description": "外部 agent 配置名（必填）" },
-                "prompt": { "type": "string", "description": "子任务提示词（推荐）" },
-                "content": { "type": "string", "description": "子任务提示词（兼容字段，与 prompt 等价）" },
-                "model_ref": { "type": "string", "description": "可选：覆盖外部 agent 默认 model_ref" },
-                "run_mode": { "type": "string", "description": "可选：覆盖外部 agent 默认 run_mode" },
-                "thinking": { "description": "可选：覆盖外部 agent 默认 thinking 参数（boolean/string/object）" },
-                "timeout_ms": { "type": "integer", "description": "可选：超时（毫秒）" },
-                "cwd": { "type": "string", "description": "可选：外部 agent 进程工作目录" }
-            },
-            "required": ["agent_name"],
-            "additionalProperties": false
-        }),
-        required_permissions: vec![ToolPermission::ShellExec],
-    }
-}
 
 fn build_agent_session_spec() -> ToolSpec {
     ToolSpec {
         name: AGENT_SESSION_TOOL_NAME.to_string(),
         description: Some(
-            "管理持久化外部 agent 会话。支持 start/send/info/list/close，用于跨多次 follow-up 的子代理协作。"
+            "管理 external adapter 的持久会话。仅支持 external 目标；start/send/info/list/close 用于跨多次 follow-up 的子代理协作。"
                 .to_string(),
         ),
         parameters: json!({
@@ -372,7 +349,7 @@ fn build_agent_session_spec() -> ToolSpec {
                     "description": "会话动作"
                 },
                 "session_id": { "type": "string", "description": "会话 ID（send/info/close 必填）" },
-                "agent_name": { "type": "string", "description": "外部 agent 配置名（start 必填）" },
+                "target": { "type": "string", "description": "仅 start 使用：目标 external adapter，格式为 `external:<adapter_name>`" },
                 "prompt": { "type": "string", "description": "会话输入（start/send 推荐）" },
                 "content": { "type": "string", "description": "会话输入（兼容字段，与 prompt 等价）" },
                 "title": { "type": "string", "description": "可选：start 时的会话标题" },
@@ -390,9 +367,11 @@ fn build_agent_session_spec() -> ToolSpec {
     }
 }
 
-fn parse_agent_run_args(call: &ToolCall) -> Result<AgentRunArgs, ToolError> {
-    serde_json::from_str::<AgentRunArgs>(&call.arguments)
-        .map_err(|e| ToolError::invalid(format!("agent_run 参数不是合法 JSON: {e}")))
+fn parse_external_agent_once_request(
+    call: &ToolCall,
+) -> Result<ExternalAgentOnceRequest, ToolError> {
+    serde_json::from_str::<ExternalAgentOnceRequest>(&call.arguments)
+        .map_err(|e| ToolError::invalid(format!("subagent_call(external) 参数不是合法 JSON: {e}")))
 }
 
 fn parse_agent_session_args(call: &ToolCall) -> Result<AgentSessionArgs, ToolError> {
@@ -422,7 +401,29 @@ fn resolve_required_external_agent_name(
     agent_name: Option<&str>,
 ) -> Result<String, ToolError> {
     normalize_optional_string(agent_name)
-        .ok_or_else(|| ToolError::invalid(format!("{tool_name} 缺少 agent_name 参数")))
+        .ok_or_else(|| ToolError::invalid(format!("{tool_name} 缺少 external adapter 名称")))
+}
+
+fn resolve_required_external_target_name(
+    tool_name: &str,
+    target: Option<&str>,
+    legacy_agent_name: Option<&str>,
+) -> Result<String, ToolError> {
+    if let Some(target) = normalize_optional_string(target) {
+        let Some(name) = target.strip_prefix("external:") else {
+            return Err(ToolError::invalid(format!(
+                "{tool_name} 的 target 必须写成 external:<adapter_name>"
+            )));
+        };
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(ToolError::invalid(format!(
+                "{tool_name} 的 target 不能为空，请写成 external:<adapter_name>"
+            )));
+        }
+        return Ok(trimmed.to_string());
+    }
+    resolve_required_external_agent_name(tool_name, legacy_agent_name)
 }
 
 fn resolve_required_session_id(args: &AgentSessionArgs) -> Result<String, ToolError> {
@@ -504,7 +505,7 @@ pub(crate) fn maybe_validate_auto_headless_target(
         resolve_local_headless_approval_policy(config, external_agent, model_ref, run_mode)?;
     if !matches!(approval, AskForApproval::Never) {
         return Err(ToolError::denied(
-            "agent_run/agent_session 当前未接入审批回传；自动使用本地 tauri-ai-headless 时，目标 agent 的 approval policy 必须为 never。若需自定义外部执行器，请在 externalAgents 配置里显式指定 transport.command。",
+            "external adapter 当前未接入审批回传；自动使用本地 tauri-ai-headless 时，目标 agent 的 approval policy 必须为 never。若需自定义外部执行器，请在 externalAgents 配置里显式指定 transport.command。",
         ));
     }
     Ok(())
@@ -1606,20 +1607,23 @@ pub(crate) async fn close_external_agent_session_direct(
     Err(ToolError::denied("external agent session 当前仅支持桌面端"))
 }
 
-async fn run_agent_run(
+pub(crate) async fn run_external_agent_once(
     ctx: &mut ToolExecutionContext<'_>,
     call: &ToolCall,
 ) -> Result<ToolCallResult, ToolError> {
-    validate_desktop_subprocess_support(AGENT_RUN_TOOL_NAME)?;
-    let args = parse_agent_run_args(call)?;
+    validate_desktop_subprocess_support(EXTERNAL_ONCE_TOOL_LABEL)?;
+    let args = parse_external_agent_once_request(call)?;
     let prompt = resolve_prompt(
-        AGENT_RUN_TOOL_NAME,
+        EXTERNAL_ONCE_TOOL_LABEL,
         args.prompt.as_deref(),
         args.content.as_deref(),
     )?;
     let config = load_app_config()?;
-    let external_agent_name =
-        resolve_required_external_agent_name(AGENT_RUN_TOOL_NAME, args.agent_name.as_deref())?;
+    let external_agent_name = resolve_required_external_target_name(
+        EXTERNAL_ONCE_TOOL_LABEL,
+        args.target.as_deref(),
+        args.agent_name.as_deref(),
+    )?;
     let external_agent = resolve_external_agent(&config, &external_agent_name)?;
 
     let effective_model_ref = normalize_optional_string(args.model_ref.as_deref())
@@ -1653,7 +1657,7 @@ async fn run_agent_run(
     let output = match external_agent.transport.transport_type {
         ExternalAgentTransportType::Headless => {
             let request_payload = json!({
-                "requestId": format!("agent_run_{}", uuid::Uuid::new_v4()),
+                "requestId": format!("subagent_call_external_{}", uuid::Uuid::new_v4()),
                 "task": {
                     "content": prompt,
                     "agentName": effective_remote_agent_name(external_agent),
@@ -1664,7 +1668,7 @@ async fn run_agent_run(
                 "session": {
                     "backend": "memory",
                     "mode": "new",
-                    "title": format!("agent_run:{}", external_agent.name),
+                    "title": format!("subagent_call_external:{}", external_agent.name),
                 },
                 "output": {
                     "mode": "final_json",
@@ -1677,7 +1681,7 @@ async fn run_agent_run(
             });
             headless_output_to_invocation(
                 invoke_external_headless(
-                    AGENT_RUN_TOOL_NAME,
+                    EXTERNAL_ONCE_TOOL_LABEL,
                     external_agent,
                     &request_payload,
                     effective_timeout_ms,
@@ -1691,7 +1695,7 @@ async fn run_agent_run(
         }
         ExternalAgentTransportType::CodexCli | ExternalAgentTransportType::ClaudeCode => {
             invoke_cli_transport(
-                AGENT_RUN_TOOL_NAME,
+                EXTERNAL_ONCE_TOOL_LABEL,
                 external_agent,
                 &prompt,
                 effective_model_ref.as_deref(),
@@ -1717,6 +1721,8 @@ async fn run_agent_run(
     let usage = output.usage;
     let session = output.session_ref;
     let response = to_pretty_json_string(json!({
+        "source": "external",
+        "target": format!("external:{}", external_agent.name),
         "agentName": external_agent.name,
         "displayName": external_agent.display_name,
         "remoteAgentName": remote_agent_name,
@@ -1732,7 +1738,9 @@ async fn run_agent_run(
     Ok(ToolCallResult {
         content: response,
         meta: Some(json!({
-            "agentRun": {
+            "subagentCall": {
+                "source": "external",
+                "target": format!("external:{}", external_agent.name),
                 "implementation": external_agent.transport.transport_type.as_str(),
                 "agentName": external_agent.name,
                 "displayName": external_agent.display_name,
@@ -2274,8 +2282,9 @@ async fn run_agent_session(
 
     match args.action {
         AgentSessionAction::Start => {
-            let external_agent_name = resolve_required_external_agent_name(
+            let external_agent_name = resolve_required_external_target_name(
                 AGENT_SESSION_TOOL_NAME,
+                args.target.as_deref(),
                 args.agent_name.as_deref(),
             )?;
             let external_agent = resolve_external_agent(&config, &external_agent_name)?;
@@ -2297,21 +2306,6 @@ async fn run_agent_session(
         AgentSessionAction::Info => run_agent_session_info(ctx, &config, &args, &store),
         AgentSessionAction::List => run_agent_session_list(ctx, &config, &store),
         AgentSessionAction::Close => run_agent_session_close(ctx, &config, &args, &mut store),
-    }
-}
-
-#[async_trait]
-impl ToolHandler for AgentRunTool {
-    fn spec(&self) -> ToolSpec {
-        build_agent_run_spec()
-    }
-
-    async fn call(
-        &self,
-        ctx: &mut ToolExecutionContext<'_>,
-        call: &ToolCall,
-    ) -> Result<ToolCallResult, ToolError> {
-        run_agent_run(ctx, call).await
     }
 }
 

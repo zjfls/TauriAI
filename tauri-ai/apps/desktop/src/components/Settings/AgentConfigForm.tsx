@@ -658,7 +658,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
   const agentTypeOptions: { value: AgentType; label: string }[] = [
     { value: 'chat', label: 'Chat' },
     { value: 'tool', label: '工具' },
-    { value: 'task_agent', label: 'TaskAgent（仅 agenttask）' },
+    { value: 'task_agent', label: 'TaskAgent（仅 subagent_call internal）' },
   ];
 
   const effectiveType: AgentType = (agent.type ?? 'chat') as AgentType;
@@ -1185,7 +1185,7 @@ const AgentForm: React.FC<AgentFormProps> = ({
               value={agent.taskUsage || ''}
               onChange={(e) => onFieldChange('taskUsage', e.target.value || undefined)}
               disabled={!isEditing}
-              placeholder="例如：适用场景、输入约定、输出约定、边界约束。该内容会注入到 agenttask 的可用 TaskAgent 清单里。"
+              placeholder="例如：适用场景、输入约定、输出约定、边界约束。该内容会注入到 subagent_call 的 internal TaskAgent 清单里。"
               rows={4}
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 disabled:bg-gray-100 dark:disabled:bg-gray-800 resize-y"
             />

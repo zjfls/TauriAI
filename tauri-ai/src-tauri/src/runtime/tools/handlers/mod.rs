@@ -7,5 +7,6 @@ pub mod mcp;
 pub mod mcp_resource;
 pub mod pty;
 pub mod shell;
+pub mod subagent_call;
 pub mod text_edit;
 pub mod web_search;

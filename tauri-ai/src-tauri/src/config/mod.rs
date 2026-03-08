@@ -208,7 +208,7 @@ mod tests {
                     use_reasoning_effort: None,
                     reinject_reasoning_content: false,
                     text_edit_implementation: None,
-                    agent_task_implementation: None,
+                    internal_agent_implementation: None,
                     shell_implementation: None,
                 }],
             }],

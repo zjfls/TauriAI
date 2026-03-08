@@ -1011,18 +1011,18 @@ impl Default for ShellImplementation {
     }
 }
 
-/// Agent 子任务工具实现类型（`agenttask`）。
+/// 内部 Agent 能力的执行实现。
 ///
-/// - `in_process`：在当前进程内直接调用 AI client（轻量、低开销）
-/// - `subprocess`：通过 `tauri-ai-headless` 子进程执行（隔离性更好）
+/// - `in_process`：在当前进程内直接调用内部 TaskAgent（轻量、低开销）
+/// - `subprocess`：通过 `tauri-ai-headless` 子进程执行内部 TaskAgent（隔离性更好）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum AgentTaskImplementation {
+pub enum InternalAgentImplementation {
     InProcess,
     Subprocess,
 }
 
-impl Default for AgentTaskImplementation {
+impl Default for InternalAgentImplementation {
     fn default() -> Self {
         Self::InProcess
     }
@@ -1188,9 +1188,12 @@ pub struct Model {
     /// Text edit tool implementation preference for this model (default: apply_patch).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text_edit_implementation: Option<TextEditImplementation>,
-    /// Agent 子任务工具（agenttask）实现偏好（默认：in_process）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_task_implementation: Option<AgentTaskImplementation>,
+    /// 内部 Agent 调用的执行实现偏好（默认：in_process）。
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "agentTaskImplementation"
+    )]
+    pub internal_agent_implementation: Option<InternalAgentImplementation>,
     /// Shell 工具实现偏好（默认：shell_command）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell_implementation: Option<ShellImplementation>,
@@ -1215,7 +1218,7 @@ impl Default for Model {
             use_reasoning_effort: None,
             reinject_reasoning_content: false,
             text_edit_implementation: None,
-            agent_task_implementation: None,
+            internal_agent_implementation: None,
             shell_implementation: None,
         }
     }
@@ -1289,7 +1292,7 @@ pub enum AgentType {
     Chat,
     /// 工具型 Agent（function/tool calling loop）
     Tool,
-    /// 子任务 Agent（仅供 `agenttask` 工具调用）
+    /// 子任务 Agent（仅供 `subagent_call` 的 internal 目标调用）
     TaskAgent,
     /// 练习系统专用 Agent（仅供 Practice 模块调用）
     Practice,
@@ -1355,7 +1358,7 @@ pub struct Agent {
     /// TaskAgent 用法说明（仅 `type=task_agent` 使用）。
     ///
     /// 用于告诉上层智能体：这个 TaskAgent 擅长什么任务、输入输出约定、调用边界。
-    /// 会在注册 `agenttask` 工具时作为“可用 TaskAgent 清单”的一部分注入系统提示词。
+    /// 会在注册 `subagent_call` 工具时作为“可用 internal TaskAgent 清单”的一部分注入系统提示词。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_usage: Option<String>,
     /// Model reference in format "provider_name/model_name"
@@ -3049,6 +3052,10 @@ impl AppConfig {
         if ensure_toolset_shell_normalized(self) {
             changed = true;
         }
+        // Toolsets: 子 Agent 一次性调用统一收敛为 `subagent_call`（内部/外部来源由 target 决定）。
+        if ensure_toolset_subagent_normalized(self) {
+            changed = true;
+        }
 
         // Backward compatibility: symbol analysis used to reuse aiCompletion settings.
         // If existing config doesn't have symbolAnalysis, initialize it based on aiCompletion so
@@ -3171,7 +3178,7 @@ impl AppConfig {
                 use_reasoning_effort: None,
                 reinject_reasoning_content: false,
                 text_edit_implementation: None,
-                agent_task_implementation: None,
+                internal_agent_implementation: None,
                 shell_implementation: None,
             });
 
@@ -3587,7 +3594,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
         Some(TOOLSET_NAME),
     );
 
-    // TaskAgent 示例：用于 `agenttask` 子任务链路验证（可作为默认兜底）。
+    // TaskAgent 示例：用于 `subagent_call` 的 internal 子任务链路验证（可作为默认兜底）。
     match cfg.agents.iter_mut().find(|a| a.name == AGENT_TASK_EXAMPLE) {
         Some(a) => {
             if !a.enabled {
@@ -3603,7 +3610,9 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                 changed = true;
             }
             if a.description.as_deref().unwrap_or("").trim().is_empty() {
-                a.description = Some("用于 `agenttask` 的示例子任务代理（只读分析）".to_string());
+                a.description = Some(
+                    "用于 `subagent_call` internal 目标的示例子任务代理（只读分析）".to_string(),
+                );
                 changed = true;
             }
             if a.task_usage.as_deref().unwrap_or("").trim().is_empty() {
@@ -3649,7 +3658,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
                 enabled: true,
                 agent_type: AgentType::TaskAgent,
                 display_name: "TaskAgent 示例".to_string(),
-                description: Some("用于 `agenttask` 的示例子任务代理（只读分析）".to_string()),
+                description: Some("用于 `subagent_call` internal 目标的示例子任务代理（只读分析）".to_string()),
                 task_usage: Some(
                     "适用场景：边界清晰的只读分析子任务；输入建议包含目标、约束与期望输出结构。输出将给出结论、依据与下一步建议。"
                         .to_string(),
@@ -3923,6 +3932,55 @@ fn ensure_toolset_shell_normalized(cfg: &mut AppConfig) -> bool {
             let insert_at = first_shell_idx
                 .unwrap_or_else(|| cleaned.len())
                 .min(cleaned.len());
+            cleaned.insert(insert_at, MARKER.to_string());
+            if cleaned != before {
+                changed = true;
+            }
+        }
+
+        if cleaned != ts.tools {
+            ts.tools = cleaned;
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+fn ensure_toolset_subagent_normalized(cfg: &mut AppConfig) -> bool {
+    const MARKER: &str = "subagent_call";
+    const LEGACY_INTERNAL: &str = "agenttask";
+    const LEGACY_EXTERNAL: &str = "agent_run";
+
+    let mut changed = false;
+    for ts in &mut cfg.tools.toolsets {
+        if ts.tools.is_empty() {
+            continue;
+        }
+
+        let mut cleaned: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for raw in &ts.tools {
+            let name = raw.trim();
+            if name.is_empty() {
+                changed = true;
+                continue;
+            }
+            if seen.insert(name.to_string()) {
+                cleaned.push(name.to_string());
+            } else {
+                changed = true;
+            }
+        }
+
+        let once_tools = [MARKER, LEGACY_INTERNAL, LEGACY_EXTERNAL];
+        let first_once_idx = cleaned
+            .iter()
+            .position(|tool| once_tools.contains(&tool.as_str()));
+        if let Some(first_once_idx) = first_once_idx {
+            let before = cleaned.clone();
+            cleaned.retain(|tool| !once_tools.contains(&tool.as_str()));
+            let insert_at = first_once_idx.min(cleaned.len());
             cleaned.insert(insert_at, MARKER.to_string());
             if cleaned != before {
                 changed = true;

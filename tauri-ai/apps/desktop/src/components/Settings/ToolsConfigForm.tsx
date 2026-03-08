@@ -15,9 +15,8 @@ const AVAILABLE_TOOLS = [
   { name: 'list_dir', label: '列目录', description: '列出目录结构（带缩进）' },
   { name: 'rg', label: 'rg', description: '按 pattern 搜索文件（ripgrep）' },
   { name: 'text_edit', label: '文本编辑', description: '抽象文本编辑能力：实现由模型的 textEditImplementation 选择（默认 apply_patch）' },
-  { name: 'agenttask', label: 'Agent 子任务', description: '抽象 Agent 子任务能力：实现由模型的 agentTaskImplementation 选择（in_process / subprocess）' },
-  { name: 'agent_run', label: '子 Agent 单次调用', description: '调用已激活的外部 Agent 程序执行一次性子任务' },
-  { name: 'agent_session', label: '子 Agent 持久会话', description: '调用已激活的外部 Agent 程序执行可复用的持久子会话' },
+  { name: 'subagent_call', label: '子 Agent 单次调用', description: '统一的一次性子 Agent 调用：target 可选 internal TaskAgent 或 external adapter' },
+  { name: 'agent_session', label: '外部 Agent 持久会话', description: '调用 external adapter 执行可复用的持久子会话' },
   { name: 'shell', label: 'Shell', description: '抽象 Shell 能力：实现由模型的 shellImplementation 选择（默认 shell_command）' },
 ] as const;
 

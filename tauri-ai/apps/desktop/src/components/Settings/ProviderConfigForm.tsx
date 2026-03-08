@@ -15,7 +15,7 @@ import type {
   ProviderType,
   ModelCapabilities,
   TextEditImplementation,
-  AgentTaskImplementation,
+  InternalAgentImplementation,
   ShellImplementation,
 } from '../../types';
 
@@ -901,14 +901,14 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                 </div>
 
                                 <div className="col-span-4">
-                                  <label className="block text-xs text-gray-500">agenttask 实现</label>
+                                  <label className="block text-xs text-gray-500">内部 Agent 实现</label>
                                   <select
-                                    value={model.agentTaskImplementation ?? 'in_process'}
+                                    value={model.internalAgentImplementation ?? 'in_process'}
                                     onChange={(e) => {
-                                      const next = e.target.value as AgentTaskImplementation;
+                                      const next = e.target.value as InternalAgentImplementation;
                                       onUpdateModel(index, {
                                         ...model,
-                                        agentTaskImplementation: next === 'in_process' ? undefined : next,
+                                        internalAgentImplementation: next === 'in_process' ? undefined : next,
                                       });
                                     }}
                                     disabled={!isEditing}
@@ -918,7 +918,7 @@ const ProviderForm: React.FC<ProviderFormProps> = ({
                                     <option value="subprocess">subprocess（headless，需 approval never）</option>
                                   </select>
                                   <p className="mt-1 text-[11px] text-gray-500">
-                                    仅当 toolset 开启 <code className="font-mono">agenttask</code> 时生效；<code className="font-mono">subprocess</code> 当前要求目标 agent 的 approval policy 为 <code className="font-mono">never</code>。
+                                    仅当 toolset 开启 <code className="font-mono">subagent_call</code> 且目标为 <code className="font-mono">internal:*</code> 时生效；<code className="font-mono">subprocess</code> 当前要求目标 TaskAgent 的 approval policy 为 <code className="font-mono">never</code>。
                                   </p>
                                 </div>
 

@@ -143,7 +143,7 @@ export const SubAgentConfigForm: React.FC = () => {
 
   const toolsets = config.tools?.toolsets ?? [];
   const recommendedToolset = getRecommendedToolset(toolsets);
-  const hasAgentRunTool = toolsets.some((toolset) => toolset.tools.includes('agent_run'));
+  const hasSubagentCallTool = toolsets.some((toolset) => toolset.tools.includes('subagent_call'));
   const hasAgentSessionTool = toolsets.some((toolset) => toolset.tools.includes('agent_session'));
 
   const commitConfig = (updatedConfig: AppConfig, immediate = false) => {
@@ -191,7 +191,7 @@ export const SubAgentConfigForm: React.FC = () => {
       }
       return {
         ...toolset,
-        tools: Array.from(new Set([...toolset.tools, 'agent_run', 'agent_session'])),
+        tools: Array.from(new Set([...toolset.tools, 'subagent_call', 'agent_session'])),
       };
     });
     void saveConfig({
@@ -208,10 +208,10 @@ export const SubAgentConfigForm: React.FC = () => {
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-1">
-            <h3 className="text-base font-semibold text-gray-900 dark:text-white">子agent</h3>
+            <h3 className="text-base font-semibold text-gray-900 dark:text-white">外部Agent</h3>
             <p className="text-sm text-gray-600 dark:text-gray-300">
               管理可被父 Agent 调用的外部程序。启用后，模型可通过
-              <code className="mx-1 font-mono">agent_run</code>
+              <code className="mx-1 font-mono">subagent_call</code>
               与
               <code className="mx-1 font-mono">agent_session</code>
               使用这些程序。
@@ -235,15 +235,15 @@ export const SubAgentConfigForm: React.FC = () => {
         ) : null}
       </div>
 
-      {(!hasAgentRunTool || !hasAgentSessionTool) && recommendedToolset ? (
+      {(!hasSubagentCallTool || !hasAgentSessionTool) && recommendedToolset ? (
         <div className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50 dark:bg-amber-950/40 p-4 space-y-3">
           <div className="flex items-start gap-2 text-sm text-amber-900 dark:text-amber-200">
             <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
             <div>
-              <div className="font-medium">当前 toolset 还没有完整暴露子agent工具</div>
+              <div className="font-medium">当前 toolset 还没有完整暴露外部 Agent 工具</div>
               <div>
                 推荐把
-                <code className="mx-1 font-mono">agent_run</code>
+                <code className="mx-1 font-mono">subagent_call</code>
                 与
                 <code className="mx-1 font-mono">agent_session</code>
                 加入

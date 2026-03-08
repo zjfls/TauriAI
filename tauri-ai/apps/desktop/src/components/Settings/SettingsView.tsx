@@ -72,7 +72,7 @@ export const SettingsView: React.FC = () => {
     { id: 'providers', icon: <Server size={18} />, label: '提供商' },
     { id: 'agents', icon: <Bot size={18} />, label: '智能体' },
     { id: 'tools', icon: <Wrench size={18} />, label: '工具' },
-    { id: 'subAgents', icon: <Bot size={18} />, label: '子agent' },
+    { id: 'subAgents', icon: <Bot size={18} />, label: '外部Agent' },
     { id: 'codeIntelligence', icon: <Code size={18} />, label: '代码智能' },
     { id: 'mcp', icon: <Plug size={18} />, label: 'MCP' },
     { id: 'skills', icon: <Sparkles size={18} />, label: 'Skills' },

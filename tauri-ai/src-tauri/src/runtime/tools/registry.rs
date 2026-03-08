@@ -5,19 +5,19 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use crate::ai_client::ToolCall;
-use crate::models::AgentTaskImplementation;
+use crate::models::InternalAgentImplementation;
 use crate::models::SandboxPolicy;
 use crate::runtime::emitter::RunEmitter;
 
-use super::handlers::agent_task::{AgentTaskInProcessTool, AgentTaskSubprocessTool};
 use super::handlers::apply_patch::{ApplyPatchTool, ApplyPatchUnifiedDiffTool};
 use super::handlers::builtin::{EchoTool, GetTimeTool};
-use super::handlers::external_agent::{AgentRunTool, AgentSessionTool};
+use super::handlers::external_agent::AgentSessionTool;
 use super::handlers::file_tools::{ListDirTool, ReadFileTool, RgTool};
 use super::handlers::pty::{
     ExecCommandPersistentTool, ExecCommandTool, WriteStdinPersistentTool, WriteStdinTool,
 };
 use super::handlers::shell::ShellCommandTool;
+use super::handlers::subagent_call::SubagentCallTool;
 use super::handlers::text_edit::{ReplaceStringTool, WriteFileTool};
 use super::services::ToolServices;
 use super::spec::ToolSpec;
@@ -189,13 +189,13 @@ impl ToolRegistry {
 
 #[derive(Debug, Clone)]
 pub struct BuiltinHandlerOptions {
-    pub agent_task_implementation: AgentTaskImplementation,
+    pub internal_agent_implementation: InternalAgentImplementation,
 }
 
 impl Default for BuiltinHandlerOptions {
     fn default() -> Self {
         Self {
-            agent_task_implementation: AgentTaskImplementation::InProcess,
+            internal_agent_implementation: InternalAgentImplementation::InProcess,
         }
     }
 }
@@ -213,11 +213,9 @@ pub fn register_builtin_handlers_with_options(
     registry.register(Arc::new(ReadFileTool));
     registry.register(Arc::new(ListDirTool));
     registry.register(Arc::new(RgTool));
-    match options.agent_task_implementation {
-        AgentTaskImplementation::InProcess => registry.register(Arc::new(AgentTaskInProcessTool)),
-        AgentTaskImplementation::Subprocess => registry.register(Arc::new(AgentTaskSubprocessTool)),
-    }
-    registry.register(Arc::new(AgentRunTool));
+    registry.register(Arc::new(SubagentCallTool::new(
+        options.internal_agent_implementation,
+    )));
     registry.register(Arc::new(AgentSessionTool));
     registry.register(Arc::new(ApplyPatchTool));
     registry.register(Arc::new(ApplyPatchUnifiedDiffTool));
