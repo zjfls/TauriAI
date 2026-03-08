@@ -11,7 +11,41 @@ use tokio::process::Command;
 use crate::models::{
     ExternalAgentConfig, ExternalAgentTransportConfig, ExternalAgentTransportType,
 };
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use crate::runtime::tools::registry::ToolError;
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[derive(Debug, Clone)]
+struct ToolError {
+    message: String,
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl ToolError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    fn timeout(message: impl Into<String>) -> Self {
+        Self::new(message)
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self::new(message)
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl std::fmt::Display for ToolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl std::error::Error for ToolError {}
 
 const STDERR_TAIL_LIMIT: usize = 24;
 const STDOUT_TAIL_LIMIT: usize = 24;

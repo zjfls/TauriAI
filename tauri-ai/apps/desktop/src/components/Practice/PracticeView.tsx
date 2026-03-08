@@ -359,7 +359,7 @@ export function PracticeView() {
       <main className="flex-1 min-w-0 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-5 grid gap-5">
           <div className="rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-800">
-            <div className="flex items-center gap-3">
+            <div className="flex items-start gap-3">
               <input
                 className="flex-1 min-w-0 h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                 value={quiz.title}
@@ -367,7 +367,7 @@ export function PracticeView() {
               />
               <button
                 type="button"
-                className="h-10 px-3 rounded-lg bg-red-600 hover:bg-red-500 text-white text-sm"
+                className="h-10 px-3 rounded-lg bg-red-500/15 text-sm text-red-600 transition-colors hover:bg-red-500/25 dark:text-red-200"
                 onClick={() => deleteQuiz(quiz.id)}
                 title="删除该练习"
               >
@@ -375,71 +375,85 @@ export function PracticeView() {
               </button>
             </div>
 
-            <div className="mt-3 text-sm text-gray-600 dark:text-gray-300">
-              批改/出题使用 Agent：{practiceAgent.label || SYSTEM_PRACTICE_AGENT_LABEL}
-              {practiceAgent.modelLabel ? ` · ${practiceAgent.modelLabel}` : ""}
-            </div>
+            <div className="mt-3 grid gap-3">
+              <div>
+                <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">练习专用 Agent</div>
+                <div className="rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-900/70">
+                  <div className="text-sm text-gray-900 dark:text-gray-100">
+                    {practiceAgent.label || SYSTEM_PRACTICE_AGENT_LABEL}
+                    <span className="ml-2 text-[11px] text-indigo-600 dark:text-indigo-300">系统内置</span>
+                  </div>
+                  <div className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    {practiceAgent.modelLabel ? `模型：${practiceAgent.modelLabel}` : "模型：未配置"}
+                  </div>
+                </div>
+              </div>
 
-            <div className="mt-4 grid grid-cols-12 gap-2 items-end">
-              <div className="col-span-12">
-                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">AI 出题主题</label>
+              <div className="grid gap-2">
+                <div className="text-xs text-gray-500 dark:text-gray-400">AI 出题主题</div>
                 <input
                   className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
                   placeholder="例如：线性代数 特征值与特征向量"
                 />
-              </div>
-              {PRACTICE_GENERATION_FIELDS.map((field) => (
-                <div key={field.type} className="col-span-3">
-                  <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">{field.label}</label>
-                  <input
-                    type="number"
-                    min={0}
-                    max={20}
-                    step={1}
-                    inputMode="numeric"
-                    className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                    value={questionCounts[field.type]}
-                    onChange={(e) =>
-                      setQuestionCounts((prev) => ({
-                        ...prev,
-                        [field.type]: normalizePracticeGenerationCountValue(e.target.value, prev[field.type]),
-                      }))
-                    }
-                  />
+
+                <div className="grid grid-cols-2 gap-2">
+                  {PRACTICE_GENERATION_FIELDS.map((field) => (
+                    <label
+                      key={field.type}
+                      className="rounded-xl border border-gray-200 bg-gray-50 p-3 text-gray-900 dark:border-gray-700 dark:bg-gray-900/70 dark:text-gray-100"
+                    >
+                      <span className="mb-1 block text-xs text-gray-500 dark:text-gray-400">{field.label}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={20}
+                        step={1}
+                        inputMode="numeric"
+                        className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                        value={questionCounts[field.type]}
+                        onChange={(e) =>
+                          setQuestionCounts((prev) => ({
+                            ...prev,
+                            [field.type]: normalizePracticeGenerationCountValue(e.target.value, prev[field.type]),
+                          }))
+                        }
+                      />
+                    </label>
+                  ))}
                 </div>
-              ))}
-              <div className="col-span-8">
-                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">难度</label>
-                <select
-                  className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-                  value={difficulty}
-                  onChange={(e) => setDifficulty(e.target.value as any)}
-                >
-                  <option value="easy">简单</option>
-                  <option value="medium">中等</option>
-                  <option value="hard">困难</option>
-                </select>
+
+                <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+                  <span>共 {totalQuestionCount} 题</span>
+                  <span>每种题型可填 0-20</span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <select
+                    className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                    value={difficulty}
+                    onChange={(e) => setDifficulty(e.target.value as any)}
+                  >
+                    <option value="easy">简单</option>
+                    <option value="medium">中等</option>
+                    <option value="hard">困难</option>
+                  </select>
+                  <button
+                    type="button"
+                    className="h-10 rounded-lg bg-indigo-600 text-sm text-white transition-colors hover:bg-indigo-500 disabled:opacity-50 flex items-center justify-center gap-2"
+                    onClick={onGenerate}
+                    disabled={genBusy}
+                  >
+                    <Wand2 size={16} />
+                    {genBusy ? "生成中…" : `生成 ${totalQuestionCount} 题`}
+                  </button>
+                </div>
+
+                {genError ? (
+                  <div className="text-sm text-red-600 dark:text-red-400">{genError}</div>
+                ) : null}
               </div>
-              <div className="col-span-4 flex justify-end">
-                <button
-                  type="button"
-                  className="h-10 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-sm flex items-center gap-2 disabled:opacity-50"
-                  onClick={onGenerate}
-                  disabled={genBusy}
-                >
-                  <Wand2 size={16} />
-                  {genBusy ? "生成中…" : `生成 ${totalQuestionCount} 题`}
-                </button>
-              </div>
-              <div className="col-span-12 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-                <span>共 {totalQuestionCount} 题</span>
-                <span>每种题型可填 0-20</span>
-              </div>
-              {genError ? (
-                <div className="col-span-12 text-sm text-red-600 dark:text-red-400">{genError}</div>
-              ) : null}
             </div>
           </div>
 

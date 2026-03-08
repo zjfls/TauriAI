@@ -28,8 +28,9 @@ pub mod workstudio_security;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
+use tauri::Emitter;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use config::ConfigManager;
 

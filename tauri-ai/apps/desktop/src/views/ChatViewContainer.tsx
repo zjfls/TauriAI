@@ -15,6 +15,7 @@ import { cursorPosition } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import type { AgentSession } from '../types';
 import { ChatView } from '../components/Chat/ChatView';
+import { PracticeView } from '../components/Practice/PracticeView';
 import { DocumentView } from '../components/Documents/DocumentView';
 import { TerminalTabView } from '../components/Terminal/TerminalTabView';
 import { WebTabView } from '../components/Web/WebTabView';
@@ -28,6 +29,7 @@ import {
   chatTabId,
   docTabId,
   parseWorkspaceTabId,
+  practiceTabId,
   terminalTabId,
   useWorkspaceTabStore,
   webTabId,
@@ -36,6 +38,7 @@ import {
 import { reconcileWindowPaneLayoutSnapshot } from '../utils/windowPaneLayout';
 import { useDragGhostSession } from '../hooks/useDragGhostSession';
 import { useRemoteDragSplitPreview } from '../hooks/useRemoteDragSplitPreview';
+import { PRACTICE_TAB_TITLE } from '../utils/practiceWorkspaceTab';
 import { endChatOpenProfile, getActiveChatOpenProfile, markChatOpenProfile } from '../utils/chatOpenProfile';
 import {
   closeCurrentWindow,
@@ -130,6 +133,9 @@ const WindowPaneView: React.FC<{
       if (!wid) return null;
       return <WebTabView webTabId={wid} />;
     }
+    if (parsed.kind === 'practice') {
+      return <PracticeView />;
+    }
     const tid = parsed.terminalTabId;
     if (!tid) return null;
     return <TerminalTabView terminalTabId={tid} isActive={isFocused && tabId === activeTabId} />;
@@ -218,6 +224,8 @@ const ChatViewContainerInner: React.FC = () => {
   const setActiveTerminalTab = useTerminalTabStore((s) => s.setActiveTerminalTab);
 
   const workspaceTabOrder = useWorkspaceTabStore((state) => state.tabOrder);
+  const practiceWorkspaceTabId = practiceTabId();
+  const practiceTabOpen = workspaceTabOrder.includes(practiceWorkspaceTabId);
 
   const layerRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const paneRootRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -235,8 +243,9 @@ const ChatViewContainerInner: React.FC = () => {
     for (const d of documents) set.add(docTabId(d.id));
     for (const w of webTabs) set.add(webTabId(w.id));
     for (const t of terminalTabs) set.add(terminalTabId(t.id));
+    if (practiceTabOpen) set.add(practiceWorkspaceTabId);
     return set;
-  }, [documents, sessionsMap, terminalTabs, webTabs]);
+  }, [documents, practiceTabOpen, practiceWorkspaceTabId, sessionsMap, terminalTabs, webTabs]);
 
   const orderedValidTabIds = useMemo(() => {
     const ordered: WorkspaceTabId[] = [];
@@ -590,6 +599,9 @@ const ChatViewContainerInner: React.FC = () => {
       if (parsed.kind === 'web') {
         return parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId)?.title ?? '网页' : '网页';
       }
+      if (parsed.kind === 'practice') {
+        return PRACTICE_TAB_TITLE;
+      }
       return parsed.terminalTabId ? terminalTabs.find((t) => t.id === parsed.terminalTabId)?.title ?? '终端' : '终端';
     },
     [documents, sessionsById, terminalTabs, webTabs]
@@ -773,6 +785,33 @@ const ChatViewContainerInner: React.FC = () => {
             closeWebTab(tab.id);
           } catch (err) {
             console.error('Failed to popout web tab:', err);
+            alert('当前环境不支持打开新窗口');
+          }
+        })();
+        return;
+      }
+
+      if (parsed.kind === 'practice') {
+        void (async () => {
+          try {
+            const bounds = await computePopoutWindowBoundsAtCursor({
+              clientPoint: clientPoint ?? null,
+              minWidth: 900,
+              minHeight: 630,
+            });
+            const label = `workspace-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+            const win = openViewWindow('practice', PRACTICE_TAB_TITLE, { label, noDefaultSession: true, window: bounds });
+            win.once('tauri://created', () => {
+              void win.setFocus().catch(() => {});
+              closeTabInLayout(tabId);
+              useWorkspaceTabStore.getState().removePracticeTab();
+            });
+            win.once('tauri://error', (err) => {
+              console.error('Failed to popout practice tab:', (err as any)?.payload ?? err);
+              alert('打开新窗口失败，请检查窗口权限/配置');
+            });
+          } catch (err) {
+            console.error('Failed to popout practice tab:', err);
             alert('当前环境不支持打开新窗口');
           }
         })();
@@ -1203,6 +1242,10 @@ const ChatViewContainerInner: React.FC = () => {
         if (parsed.webTabId) closeWebTab(parsed.webTabId);
         return;
       }
+      if (parsed.kind === 'practice') {
+        useWorkspaceTabStore.getState().removePracticeTab();
+        return;
+      }
       if (parsed.terminalTabId) void closeTerminalTab(parsed.terminalTabId);
     },
     [closeDocument, closeSession, closeTabInLayout, closeTerminalTab, closeWebTab]
@@ -1293,6 +1336,9 @@ const ChatViewContainerInner: React.FC = () => {
               }
               if (parsed.kind === 'web') {
                 return parsed.webTabId ? webTabs.find((t) => t.id === parsed.webTabId)?.title ?? '网页' : '网页';
+              }
+              if (parsed.kind === 'practice') {
+                return PRACTICE_TAB_TITLE;
               }
               return parsed.terminalTabId
                 ? terminalTabs.find((t) => t.id === parsed.terminalTabId)?.title ?? '终端'
