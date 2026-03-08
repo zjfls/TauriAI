@@ -3,7 +3,6 @@
 //! This module contains all Tauri command handlers that bridge
 //! the frontend and backend functionality.
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod code_intel;
@@ -51,8 +50,7 @@ mod workstudio_state;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod workstudio_terminal;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub use clipboard::clipboard_write_png_base64;
+pub use clipboard::{clipboard_write_png_base64, save_png_base64_to_local};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{
     ai_analyze_workstudio_symbol, ai_code_completion, ast_document_symbols,

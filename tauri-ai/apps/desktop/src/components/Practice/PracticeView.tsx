@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { isTauri, invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { MessageSquareText, Plus, Trash2, Wand2 } from "lucide-react";
@@ -13,9 +13,6 @@ import {
 import { MarkdownRenderer } from "../Chat/MarkdownRenderer";
 import { usePracticeStore } from "../../../../common/src/practice/store";
 import type {
-  InkPoint,
-  InkState,
-  InkStroke,
   PracticeAnswer,
   PracticeQuestion,
   PracticeQuestionProgress,
@@ -37,6 +34,13 @@ import {
   ScrollableInkPad,
   createEmptyInkState,
 } from "../../../../common/src/practice/ink/ScrollableInkPad";
+import { InkBrushPreview } from "../../../../common/src/practice/ink/InkBrushPalette";
+import { renderInkStateToDataUrl as renderInkToDataUrl } from "../../../../common/src/practice/ink/rendering";
+import {
+  DEFAULT_INK_BRUSH_ID,
+  getInkBrushMenuLabel,
+  INK_BRUSH_PRESETS,
+} from "../../../../common/src/practice/ink/brushes";
 import { buildPracticeQuestionChatPrompt } from "../../../../common/src/practice/chatPrompt";
 import {
   buildPracticeChoiceGrading,
@@ -52,128 +56,33 @@ function questionTypeLabel(t: PracticeQuestionType): string {
   return "问答题";
 }
 
-function drawInkSegment(
-  ctx: CanvasRenderingContext2D,
-  stroke: InkStroke,
-  a: InkPoint,
-  b: InkPoint,
-) {
-  const rawSize =
-    typeof stroke.size === "number" && Number.isFinite(stroke.size)
-      ? stroke.size
-      : 1;
-  const baseSize = Math.max(0.5, Math.min(64, rawSize));
-  const opacity =
-    typeof stroke.opacity === "number"
-      ? Math.max(0.05, Math.min(1, stroke.opacity))
-      : stroke.tool === "pencil"
-        ? 0.65
-        : 1;
-  const pressureSensitivity =
-    typeof stroke.pressureSensitivity === "number"
-      ? Math.max(0, Math.min(1, stroke.pressureSensitivity))
-      : 0;
-  const pressure = Math.max(
-    0.1,
-    Math.min(
-      1,
-      (typeof b.pressure === "number" && b.pressure > 0
-        ? b.pressure
-        : undefined) ??
-        (typeof a.pressure === "number" && a.pressure > 0
-          ? a.pressure
-          : undefined) ??
-        0.5,
-    ),
-  );
-  const lineWidth =
-    stroke.tool === "eraser"
-      ? Math.max(1, baseSize)
-      : Math.max(
-          1,
-          baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure),
-        );
+const INK_COLORS = [
+  "#111827",
+  "#1d4ed8",
+  "#0f766e",
+  "#7c3aed",
+  "#b91c1c",
+] as const;
+const DRAWING_BRUSH_PRESETS = INK_BRUSH_PRESETS.filter(
+  (item) => item.tool !== "eraser",
+);
+const ERASER_BRUSH_PRESET = INK_BRUSH_PRESETS.find(
+  (item) => item.tool === "eraser",
+);
+const INK_SIZE_MIN = 1;
+const INK_SIZE_MAX = 24;
+const INK_SIZE_STEP = 0.1;
+const INK_SIZE_HOLD_DELAY_MS = 260;
+const INK_SIZE_HOLD_INTERVAL_MS = 60;
 
-  ctx.save();
-  if (stroke.tool === "eraser") {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.strokeStyle = "rgba(0,0,0,1)";
-    ctx.globalAlpha = 1;
-  } else {
-    ctx.globalCompositeOperation = stroke.blendMode ?? "source-over";
-    ctx.strokeStyle = stroke.color || "#111827";
-    ctx.globalAlpha = opacity;
-  }
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = stroke.lineCap ?? "round";
-  ctx.lineJoin = stroke.lineJoin ?? "round";
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.stroke();
-  ctx.restore();
+function normalizeInkSize(value: number): number {
+  return Math.round(
+    Math.min(INK_SIZE_MAX, Math.max(INK_SIZE_MIN, value)) * 10,
+  ) / 10;
 }
 
-function computeInkBounds(
-  strokes: InkStroke[],
-): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const stroke of strokes) {
-    for (const point of stroke.points) {
-      minX = Math.min(minX, point.x);
-      minY = Math.min(minY, point.y);
-      maxX = Math.max(maxX, point.x);
-      maxY = Math.max(maxY, point.y);
-    }
-  }
-  if (
-    !Number.isFinite(minX) ||
-    !Number.isFinite(minY) ||
-    !Number.isFinite(maxX) ||
-    !Number.isFinite(maxY)
-  ) {
-    return null;
-  }
-  return { minX, minY, maxX, maxY };
-}
-
-async function renderInkToDataUrl(ink: InkState): Promise<string | null> {
-  if (typeof document === "undefined") return null;
-  const strokes = Array.isArray(ink?.strokes) ? ink.strokes : [];
-  if (strokes.length === 0) return null;
-  const bounds = computeInkBounds(strokes);
-  if (!bounds) return null;
-
-  const margin = 24;
-  const width = Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2));
-  const height = Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2));
-  const maxEdge = Math.max(width, height);
-  const scale = maxEdge > 1536 ? 1536 / maxEdge : 1;
-  const outW = Math.max(1, Math.round(width * scale));
-  const outH = Math.max(1, Math.round(height * scale));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, outW / scale, outH / scale);
-  ctx.translate(margin - bounds.minX, margin - bounds.minY);
-
-  for (const stroke of strokes) {
-    const points = stroke.points || [];
-    if (points.length < 2) continue;
-    for (let index = 1; index < points.length; index += 1) {
-      drawInkSegment(ctx, stroke, points[index - 1]!, points[index]!);
-    }
-  }
-  return canvas.toDataURL("image/png");
+function formatInkSize(value: number): string {
+  return value.toFixed(1);
 }
 
 export function PracticeView() {
@@ -224,10 +133,86 @@ export function PracticeView() {
     DEFAULT_PRACTICE_GENERATION_COUNTS,
   );
   const [quizTitleDraft, setQuizTitleDraft] = useState(quiz?.title ?? "");
+  const [inkDrawBrushId, setInkDrawBrushId] = useState<string>(() => {
+    const preferred = DRAWING_BRUSH_PRESETS.find(
+      (item) => item.id === DEFAULT_INK_BRUSH_ID,
+    );
+    return (
+      preferred?.id ?? DRAWING_BRUSH_PRESETS[0]?.id ?? DEFAULT_INK_BRUSH_ID
+    );
+  });
+  const [inkUseEraser, setInkUseEraser] = useState(false);
+  const [inkPenColor, setInkPenColor] = useState<string>(INK_COLORS[0]);
+  const [inkPenSize, setInkPenSize] = useState(5);
+  const [inkEraserSize, setInkEraserSize] = useState(16);
 
   const totalQuestionCount = useMemo(
     () => totalPracticeGenerationCounts(questionCounts),
     [questionCounts],
+  );
+  const activeInkBrush = useMemo(
+    () =>
+      (inkUseEraser ? ERASER_BRUSH_PRESET : undefined) ??
+      DRAWING_BRUSH_PRESETS.find((item) => item.id === inkDrawBrushId) ??
+      DRAWING_BRUSH_PRESETS.find((item) => item.id === DEFAULT_INK_BRUSH_ID) ??
+      DRAWING_BRUSH_PRESETS[0] ??
+      ERASER_BRUSH_PRESET ??
+      INK_BRUSH_PRESETS[0]!,
+    [inkDrawBrushId, inkUseEraser],
+  );
+  const activeInkSize = inkUseEraser ? inkEraserSize : inkPenSize;
+  const inkSizeHoldTimeoutRef = useRef<number | null>(null);
+  const inkSizeHoldIntervalRef = useRef<number | null>(null);
+
+  const stopInkSizeAdjust = useCallback(() => {
+    if (inkSizeHoldTimeoutRef.current !== null) {
+      window.clearTimeout(inkSizeHoldTimeoutRef.current);
+      inkSizeHoldTimeoutRef.current = null;
+    }
+    if (inkSizeHoldIntervalRef.current !== null) {
+      window.clearInterval(inkSizeHoldIntervalRef.current);
+      inkSizeHoldIntervalRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopInkSizeAdjust(), [stopInkSizeAdjust]);
+
+  const applyInkSize = useCallback(
+    (value: number) => {
+      const nextSize = normalizeInkSize(value);
+      if (inkUseEraser) {
+        setInkEraserSize(nextSize);
+        return;
+      }
+      setInkPenSize(nextSize);
+    },
+    [inkUseEraser],
+  );
+
+  const adjustInkSize = useCallback(
+    (delta: number) => {
+      if (inkUseEraser) {
+        setInkEraserSize((prev) => normalizeInkSize(prev + delta));
+        return;
+      }
+      setInkPenSize((prev) => normalizeInkSize(prev + delta));
+    },
+    [inkUseEraser],
+  );
+
+  const startInkSizeAdjust = useCallback(
+    (delta: number) => {
+      adjustInkSize(delta);
+      stopInkSizeAdjust();
+      window.addEventListener("pointerup", stopInkSizeAdjust, { once: true });
+      window.addEventListener("pointercancel", stopInkSizeAdjust, { once: true });
+      inkSizeHoldTimeoutRef.current = window.setTimeout(() => {
+        inkSizeHoldIntervalRef.current = window.setInterval(() => {
+          adjustInkSize(delta);
+        }, INK_SIZE_HOLD_INTERVAL_MS);
+      }, INK_SIZE_HOLD_DELAY_MS);
+    },
+    [adjustInkSize, stopInkSizeAdjust],
   );
 
   const [gradeBusy, setGradeBusy] = useState<Record<string, boolean>>({});
@@ -643,18 +628,133 @@ export function PracticeView() {
               placeholder="在这里作答…"
             />
           ) : (
-            <div className="h-64">
-              <ScrollableInkPad
-                value={
-                  answer?.kind === "ink" ? answer.ink : createEmptyInkState()
-                }
-                onChange={(nextInk) => {
-                  setInkDraft(quiz2.id, q.id, nextInk, { commit: true });
-                  if (submitted) clearQuestionResult(quiz2.id, q.id);
-                }}
-                template="ruled"
-                viewportClassName="scrollbar-hidden"
-              />
+            <div className="grid gap-2">
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-2 dark:border-gray-700 dark:bg-gray-900/60">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    笔刷
+                  </span>
+                  <select
+                    className="h-8 w-[136px] max-w-full rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-900 outline-none transition-colors focus:border-indigo-400 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                    value={inkDrawBrushId}
+                    onChange={(e) => {
+                      setInkDrawBrushId(e.target.value);
+                      setInkUseEraser(false);
+                    }}
+                  >
+                    <optgroup label="画笔">
+                      {DRAWING_BRUSH_PRESETS.map((brush) => (
+                        <option key={brush.id} value={brush.id}>
+                          {getInkBrushMenuLabel(brush)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  <InkBrushPreview
+                    brush={activeInkBrush}
+                    color={inkUseEraser ? "#111827" : inkPenColor}
+                    width={56}
+                    height={24}
+                  />
+                  <button
+                    type="button"
+                    className={[
+                      "h-8 rounded-md border px-2 text-xs transition-colors",
+                      inkUseEraser
+                        ? "border-indigo-400 bg-indigo-50 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-100"
+                        : "border-gray-200 bg-white text-gray-700 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800",
+                    ].join(" ")}
+                    onClick={() => setInkUseEraser((prev) => !prev)}
+                    disabled={!ERASER_BRUSH_PRESET}
+                  >
+                    橡皮
+                  </button>
+                  <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
+                    粗细
+                  </span>
+                  <button
+                    type="button"
+                    className="h-8 w-8 rounded-md border border-gray-200 bg-white text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      startInkSizeAdjust(-INK_SIZE_STEP);
+                    }}
+                    onPointerUp={stopInkSizeAdjust}
+                    onPointerCancel={stopInkSizeAdjust}
+                    onPointerLeave={stopInkSizeAdjust}
+                    onContextMenu={(e) => e.preventDefault()}
+                    aria-label="减小笔刷粗细"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="range"
+                    min={INK_SIZE_MIN}
+                    max={INK_SIZE_MAX}
+                    step={INK_SIZE_STEP}
+                    value={activeInkSize}
+                    onInput={(e) => applyInkSize(e.currentTarget.valueAsNumber)}
+                    onChange={(e) => applyInkSize(e.currentTarget.valueAsNumber)}
+                    className="h-8 w-28 accent-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    className="h-8 w-8 rounded-md border border-gray-200 bg-white text-sm font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      startInkSizeAdjust(INK_SIZE_STEP);
+                    }}
+                    onPointerUp={stopInkSizeAdjust}
+                    onPointerCancel={stopInkSizeAdjust}
+                    onPointerLeave={stopInkSizeAdjust}
+                    onContextMenu={(e) => e.preventDefault()}
+                    aria-label="增大笔刷粗细"
+                  >
+                    +
+                  </button>
+                  <span className="w-10 text-right text-xs text-gray-600 dark:text-gray-300">
+                    {formatInkSize(activeInkSize)}
+                  </span>
+                  <span className="ml-1 text-xs text-gray-500 dark:text-gray-400">
+                    颜色
+                  </span>
+                  {INK_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={[
+                        "h-7 w-7 rounded-full border transition-colors",
+                        inkUseEraser
+                          ? "cursor-not-allowed border-gray-200 opacity-40 dark:border-gray-700"
+                          : inkPenColor === color
+                            ? "border-indigo-500 ring-2 ring-indigo-200 dark:border-white/90 dark:ring-indigo-500/40"
+                            : "border-gray-300 dark:border-gray-600",
+                      ].join(" ")}
+                      style={{ backgroundColor: color }}
+                      onClick={() => setInkPenColor(color)}
+                      title={`颜色 ${color}`}
+                      disabled={inkUseEraser}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="h-64">
+                <ScrollableInkPad
+                  value={
+                    answer?.kind === "ink" ? answer.ink : createEmptyInkState()
+                  }
+                  onChange={(nextInk) => {
+                    setInkDraft(quiz2.id, q.id, nextInk, { commit: true });
+                    if (submitted) clearQuestionResult(quiz2.id, q.id);
+                  }}
+                  template="ruled"
+                  viewportClassName="scrollbar-hidden"
+                  tool={activeInkBrush.tool}
+                  brushId={activeInkBrush.id}
+                  penColor={inkPenColor}
+                  penSize={activeInkSize}
+                />
+              </div>
             </div>
           )}
 
@@ -848,7 +948,7 @@ export function PracticeView() {
                         type="number"
                         min={0}
                         max={20}
-                        step={1}
+                        step={INK_SIZE_STEP}
                         inputMode="numeric"
                         className="w-full h-10 px-3 rounded-lg border border-gray-200 bg-white text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                         value={questionCounts[field.type]}
