@@ -86,6 +86,11 @@ export interface PracticeGrading {
   model?: string;
 }
 
+export interface PracticeQuizGrading extends PracticeGrading {
+  totalQuestions: number;
+  gradedQuestions: number;
+}
+
 export interface PracticeQuestionProgress {
   answer?: PracticeAnswer;
   grading?: PracticeGrading;
@@ -94,6 +99,7 @@ export interface PracticeQuestionProgress {
 
 export interface PracticeQuizProgress {
   byQuestionId: Record<PracticeQuestionId, PracticeQuestionProgress>;
+  quizGrading?: PracticeQuizGrading;
 }
 
 export interface PracticeQuiz {

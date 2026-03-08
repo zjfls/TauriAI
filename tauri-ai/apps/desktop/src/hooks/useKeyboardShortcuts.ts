@@ -12,6 +12,7 @@ import { useUIStore } from '../stores/uiStore';
 import { useWindowLayoutStore } from '../stores/windowLayoutStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
 import { closeAllWorkstudioWindows, openOrFocusWorkstudioWindow } from '../utils/viewWindow';
+import { openPracticeWindow, openPracticeWorkspaceTab } from '../utils/practiceWorkspaceTab';
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
 import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
 import type { AgentSession, AppConfig, Workstudio } from '../types';
@@ -67,7 +68,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
   const isActionInScope = useCallback(
     (actionId: string) => {
       if (scope === 'workstudio') {
-        if (actionId === 'app.openDevtools' || actionId === 'app.openAgentWorkspace') return true;
+        if (actionId === 'app.openDevtools' || actionId === 'app.openAgentWorkspace' || actionId === 'app.openPractice') return true;
         return actionId.startsWith('workstudio.');
       }
       return true;
@@ -343,6 +344,14 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           useUIStore.getState().setActiveView('history');
           return true;
         }
+        case 'app.openPractice': {
+          if (!isTauri()) {
+            openPracticeWorkspaceTab();
+            return true;
+          }
+          await openPracticeWindow();
+          return true;
+        }
         case 'app.openDevtools': {
           if (!isTauri()) return false;
           try {
@@ -487,6 +496,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       handleCreateSession,
       handleNextSession,
       handlePreviousSession,
+      openPracticeWindow,
       openWorkstudioFromActiveSession,
       reportCloneFailure,
     ]

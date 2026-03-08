@@ -24,6 +24,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'app.openPractice',
+    title: '打开练习',
+    description: '打开独立练习窗口；若已存在则直接聚焦该窗口',
+    category: '应用',
+    defaultMac: 'Cmd+Shift+E',
+    defaultWindows: 'Ctrl+Shift+E',
+    allowWhenTyping: true,
+  },
+  {
     id: 'app.openSettings',
     title: '打开设置',
     description: '跳转到设置页面（Preferences/Settings）',

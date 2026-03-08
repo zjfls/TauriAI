@@ -5,7 +5,6 @@
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod agent_sessions;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod clipboard;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod code_intel;
@@ -56,7 +55,6 @@ pub use agent_sessions::{
     close_agent_session, get_agent_session_detail, list_agent_sessions, send_agent_session_message,
     start_agent_session,
 };
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use clipboard::clipboard_write_png_base64;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub use code_intel::{

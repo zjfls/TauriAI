@@ -4,7 +4,7 @@
  * Requirements: 2.1-2.6, 5.1, 5.2, 9.1-9.5
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { availableMonitors } from '@tauri-apps/api/window';
@@ -27,7 +27,7 @@ import { useUIStore } from './stores/uiStore';
 import { filterNonPracticeAgents } from '../../common/src/agentUtils';
 import { useWindowLayoutStore } from './stores/windowLayoutStore';
 import { chatTabId, docTabId, parseWorkspaceTabId, terminalTabId, webTabId } from './stores/workspaceTabStore';
-import { PRACTICE_TAB_TITLE, openPracticeWorkspaceTab } from './utils/practiceWorkspaceTab';
+import { PRACTICE_TAB_TITLE, openPracticeWindow, openPracticeWorkspaceTab } from './utils/practiceWorkspaceTab';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { getViewDefinition } from './views/registry';
 import { ChatViewContainer } from './views/ChatViewContainer';
@@ -150,6 +150,25 @@ function App() {
     const first = sessionsMap.keys().next().value as string | undefined;
     return first && sessionsMap.has(first) ? first : null;
   };
+
+  const ensureChatDraftTargetSessionId = useCallback(async () => {
+    const existing = resolveChatDraftTargetSessionId();
+    if (existing) return existing;
+
+    const visibleAgents = filterNonPracticeAgents(config?.agents || []);
+    const defaultAgent =
+      (config?.defaultAgent && visibleAgents.some((agent) => agent.name === config.defaultAgent)
+        ? config.defaultAgent
+        : '') || visibleAgents[0]?.name;
+    if (!defaultAgent) return null;
+
+    try {
+      return await createSession(defaultAgent);
+    } catch (error) {
+      console.error('Failed to create default session for chat draft insertion:', error);
+      return null;
+    }
+  }, [config, createSession]);
 
   const currentVisibleWindowTitle = useMemo(() => {
     const focusedPane = panes.find((pane) => pane.id === focusedPaneId) ?? panes[0] ?? null;
@@ -721,7 +740,7 @@ function App() {
       .catch(() => { });
 
     void currentWindow.listen('menu:open_practice', () => {
-      openPracticeWorkspaceTab();
+      void openPracticeWindow();
     })
       .then((fn) => {
         if (disposed) {
@@ -1210,39 +1229,65 @@ function App() {
     if (isDragGhostWindow) return;
 
     let disposed = false;
-    let unlisten: null | (() => void) = null;
+    let unlistenInsert: null | (() => void) = null;
+    let unlistenSetDraft: null | (() => void) = null;
 
     void listen('chat:insert_text', (event) => {
       if (disposed) return;
-      const payload = (event as any)?.payload ?? null;
-      const text = String(payload?.text ?? '').trim();
-      if (!text) return;
+      void (async () => {
+        const payload = (event as any)?.payload ?? null;
+        const text = String(payload?.text ?? '').trim();
+        if (!text) return;
 
-      const layout = useWindowLayoutStore.getState();
-      const sessionStore = useSessionStore.getState();
-      const sessions = sessionStore.sessions;
-      const targetSessionId = resolveChatDraftTargetSessionId();
+        const layout = useWindowLayoutStore.getState();
+        const sessionStore = useSessionStore.getState();
+        const targetSessionId = await ensureChatDraftTargetSessionId();
+        if (!targetSessionId) return;
 
-      if (!targetSessionId) return;
+        const prevDraft = sessionStore.sessions.get(targetSessionId)?.draftContent ?? '';
+        const nextDraft = prevDraft ? `${prevDraft}${prevDraft.endsWith('\n') ? '' : '\n'}${text}` : text;
 
-      const prevDraft = sessions.get(targetSessionId)?.draftContent ?? '';
-      const nextDraft = prevDraft ? `${prevDraft}${prevDraft.endsWith('\n') ? '' : '\n'}${text}` : text;
-
-      sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
-      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
+        sessionStore.setSessionDraftContent(targetSessionId, nextDraft);
+        layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
+      })();
     })
       .then((fn) => {
-        unlisten = fn;
+        unlistenInsert = fn;
       })
       .catch((err) => {
         console.error('listen chat:insert_text failed:', err);
       });
 
+    void listen('chat:set_draft_text', (event) => {
+      if (disposed) return;
+      void (async () => {
+        const payload = (event as any)?.payload ?? null;
+        const text = String(payload?.text ?? '').trim();
+        if (!text) return;
+
+        const layout = useWindowLayoutStore.getState();
+        const sessionStore = useSessionStore.getState();
+        const targetSessionId = await ensureChatDraftTargetSessionId();
+        if (!targetSessionId) return;
+
+        sessionStore.setSessionDraftContent(targetSessionId, text);
+        layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(targetSessionId));
+        useUIStore.getState().setActiveView('chat');
+      })();
+    })
+      .then((fn) => {
+        unlistenSetDraft = fn;
+      })
+      .catch((err) => {
+        console.error('listen chat:set_draft_text failed:', err);
+      });
+
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistenInsert?.();
+      unlistenSetDraft?.();
     };
-  }, [isDragGhostWindow, shouldInitChatRuntime]);
+  }, [ensureChatDraftTargetSessionId, isDragGhostWindow, shouldInitChatRuntime]);
 
   // ---------------------------------------------------------------------------
   // Workstudio -> Main window: insert workspace mention chip into chat draft
@@ -1522,8 +1567,12 @@ function App() {
   useEffect(() => {
     if (!shouldInitChatRuntime) return;
     if (activeView !== 'practice') return;
-    openPracticeWorkspaceTab();
-  }, [activeView, shouldInitChatRuntime]);
+    if (viewOverride === 'practice') return;
+    void openPracticeWindow();
+    if (useUIStore.getState().activeView === 'practice') {
+      setActiveView('chat');
+    }
+  }, [activeView, setActiveView, shouldInitChatRuntime, viewOverride]);
 
   // ChatView keep-alive:
   // - 在主窗口内切换到 History/Settings 等视图时，不卸载 ChatView（避免滚动/定位在重建时漂移）

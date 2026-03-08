@@ -2,16 +2,25 @@
 //!
 //! 目标：让前端可以把“真实图片”写入系统剪贴板，粘贴行为与系统截图一致。
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use base64::Engine as _;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(
+    not(target_os = "macos"),
+    not(any(target_os = "android", target_os = "ios"))
+))]
 use std::borrow::Cow;
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_PNG_BYTES: usize = 30 * 1024 * 1024; // 30MB
-#[cfg(target_os = "macos")]
+#[cfg(all(
+    target_os = "macos",
+    not(any(target_os = "android", target_os = "ios"))
+))]
 const MAX_INLINE_DATA_URL_PNG_BYTES: usize = 2 * 1024 * 1024; // 2MB: avoid massive HTML/text payloads
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn strip_data_url_prefix(input: &str) -> &str {
     // Accept both raw base64 and data URL like: data:image/png;base64,....
     if let Some(rest) = input.strip_prefix("data:") {
@@ -43,10 +52,20 @@ fn write_png_bytes_to_windows_clipboard(png_bytes: &[u8]) -> Result<(), String> 
     Ok(())
 }
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+#[tauri::command]
+pub async fn clipboard_write_png_base64(
+    _app: tauri::AppHandle,
+    _png_base64: String,
+) -> Result<(), String> {
+    Err("当前移动端暂不支持复制 PNG 到系统剪贴板".to_string())
+}
+
 /// Write a PNG image (base64-encoded bytes) into the system clipboard.
 ///
 /// Why: WebView clipboard APIs are inconsistent (especially on macOS WKWebView).
 /// This uses OS-native clipboard so paste behaves like a screenshot in other apps and in our input box.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 pub async fn clipboard_write_png_base64(
     app: tauri::AppHandle,

@@ -203,13 +203,10 @@ function drawStrokeSegment(
   ctx.stroke();
 }
 
-function redrawAll(
+function drawAllStrokes(
   ctx: CanvasRenderingContext2D,
   strokes: InkStroke[],
-  w: number,
-  h: number,
 ) {
-  ctx.clearRect(0, 0, w, h);
   for (const s of strokes) {
     const pts = s.points;
     if (pts.length < 2) continue;
@@ -219,6 +216,16 @@ function redrawAll(
       drawStrokeSegment(ctx, style, pts[i - 1]!, pts[i]!);
     }
   }
+}
+
+function redrawAll(
+  ctx: CanvasRenderingContext2D,
+  strokes: InkStroke[],
+  w: number,
+  h: number,
+) {
+  ctx.clearRect(0, 0, w, h);
+  drawAllStrokes(ctx, strokes);
 }
 
 function redrawPaperBackground(
@@ -392,7 +399,7 @@ export function InkPreview({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     redrawPaperBackground(ctx, template, w, h);
-    redrawAll(ctx, preview.strokes, w, h);
+    drawAllStrokes(ctx, preview.strokes);
   }, [desiredContentHeight, desiredContentWidth, preview, template]);
 
   const swallowPreviewInteraction = useCallback((event: React.SyntheticEvent<HTMLDivElement>) => {
