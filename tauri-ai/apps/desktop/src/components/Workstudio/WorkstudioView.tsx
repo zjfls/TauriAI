@@ -266,6 +266,12 @@ type WorkstudioChatWithModalState = {
   pendingSelection: InlineChatSelection | null;
 };
 
+type WorkstudioChatWithDockState = {
+  open: boolean;
+  bubbleId: string | null;
+  showCodePanel: boolean;
+};
+
 const formatOutlineRangeLabel = (range?: OutlineRange | null): string => {
   if (!range) return '';
   return range.startLine === range.endLine ? `L${range.startLine}` : `L${range.startLine}-${range.endLine}`;
@@ -1618,6 +1624,11 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     loading: false,
     pendingSelection: null,
   });
+  const [chatWithDock, setChatWithDock] = useState<WorkstudioChatWithDockState>({
+    open: false,
+    bubbleId: null,
+    showCodePanel: true,
+  });
 
   const [chatWithHistoryViewer, setChatWithHistoryViewer] = useState<{
     open: boolean;
@@ -1887,6 +1898,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       loading: false,
       pendingSelection: null,
     }));
+  }, []);
+
+  const closeChatWithDock = useCallback(() => {
+    setChatWithDock({
+      open: false,
+      bubbleId: null,
+      showCodePanel: true,
+    });
   }, []);
 
   const upsertChatWithBubble = useCallback(
@@ -2255,13 +2274,16 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       if (chatWithModal.bubbleId === bubbleId) {
         closeChatWithModal();
       }
+      if (chatWithDock.bubbleId === bubbleId) {
+        closeChatWithDock();
+      }
 
       if (!bubble.sessionId) return;
       const session = useSessionStore.getState().getSession(bubble.sessionId) ?? null;
       if (!session?.detached) return;
       await closeSession(bubble.sessionId).catch(() => { });
     },
-    [chatWithModal.bubbleId, closeChatWithModal, closeSession]
+    [chatWithDock.bubbleId, chatWithModal.bubbleId, closeChatWithDock, closeChatWithModal, closeSession]
   );
 
   const chatWithBubbleViews = useMemo(() => {
@@ -2307,6 +2329,38 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     if (!chatWithModal.bubbleId) return null;
     return chatWithBubbleViews.find((bubble) => bubble.id === chatWithModal.bubbleId) ?? null;
   }, [chatWithBubbleViews, chatWithModal.bubbleId]);
+
+  const activeDockedChatWithBubble = useMemo(() => {
+    if (!chatWithDock.bubbleId) return null;
+    return chatWithBubbleViews.find((bubble) => bubble.id === chatWithDock.bubbleId) ?? null;
+  }, [chatWithBubbleViews, chatWithDock.bubbleId]);
+
+  const floatingChatWithBubbleViews = useMemo(() => {
+    if (!chatWithDock.open || !chatWithDock.bubbleId) return chatWithBubbleViews;
+    return chatWithBubbleViews.filter((bubble) => bubble.id !== chatWithDock.bubbleId);
+  }, [chatWithBubbleViews, chatWithDock.bubbleId, chatWithDock.open]);
+
+  const dockChatWithToRight = useCallback(() => {
+    if (!chatWithModal.open || !activeChatWithBubble?.sessionId) return;
+    setChatWithDock({
+      open: true,
+      bubbleId: activeChatWithBubble.id,
+      showCodePanel: chatWithModal.showCodePanel,
+    });
+    closeChatWithModal();
+  }, [activeChatWithBubble, chatWithModal.open, chatWithModal.showCodePanel, closeChatWithModal]);
+
+  const openDockedChatWithModal = useCallback(() => {
+    if (!chatWithDock.open || !chatWithDock.bubbleId) return;
+    setChatWithModal({
+      open: true,
+      bubbleId: chatWithDock.bubbleId,
+      showCodePanel: chatWithDock.showCodePanel,
+      loading: false,
+      pendingSelection: null,
+    });
+    closeChatWithDock();
+  }, [chatWithDock, closeChatWithDock]);
 
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
@@ -5602,6 +5656,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const peekDefinition = useCallback(
     (opts?: { requireTextFocus?: boolean }) =>
       runFocusedEditorAction('editor.action.peekDefinition', { ...opts, recordNavBeforeRun: true }),
+    [runFocusedEditorAction]
+  );
+  const findTextInEditor = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('actions.find', opts),
+    [runFocusedEditorAction]
+  );
+  const goToLine = useCallback(
+    (opts?: { requireTextFocus?: boolean }) => runFocusedEditorAction('editor.action.gotoLine', opts),
     [runFocusedEditorAction]
   );
   const triggerSuggest = useCallback(
@@ -9722,6 +9784,12 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
             await refreshChatWithMarkersForPane(paneId);
           })();
         });
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, () => {
+          void editor.getAction('actions.find')?.run();
+        });
+        editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyG, () => {
+          void editor.getAction('editor.action.gotoLine')?.run();
+        });
         editor.onDidFocusEditorWidget(() => useWindowLayoutStore.getState().setFocusedPane(paneId, { trackUser: true }));
         editor.onDidChangeModel(() => {
           void refreshChatWithMarkersForPane(paneId);
@@ -11202,6 +11270,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
         openFileSearchPalette();
         return;
       }
+      if (action === 'workstudio.findText') {
+        void findTextInEditor();
+        return;
+      }
+      if (action === 'workstudio.goToLine') {
+        void goToLine();
+        return;
+      }
       if (action === 'workstudio.fileSymbolSearch') {
         openFileSymbolPalette();
         return;
@@ -11253,7 +11329,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     window.addEventListener('tauri-ai:shortcut', onShortcut as EventListener);
     return () => window.removeEventListener('tauri-ai:shortcut', onShortcut as EventListener);
   }, [
+    findTextInEditor,
     goToDefinition,
+    goToLine,
     goToReferences,
     goToTypeDefinition,
     isStandaloneWorkstudioWindow,
@@ -12658,7 +12736,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
+    <div className="workstudio-view flex h-full flex-col overflow-hidden bg-gray-50 dark:bg-gray-900">
       {tabPathTooltip && (
         <div
           className="pointer-events-none fixed z-[220]"
@@ -12676,9 +12754,9 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
           </div>
         </div>
       )}
-      {(aiBubbles.length > 0 || chatWithBubbleViews.length > 0) && (
+      {(aiBubbles.length > 0 || floatingChatWithBubbleViews.length > 0) && (
         <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
-          {chatWithBubbleViews.map((bubble) => {
+          {floatingChatWithBubbleViews.map((bubble) => {
             const isOpen = chatWithModal.open && activeChatWithBubble?.id === bubble.id;
             return (
               <div
@@ -12954,6 +13032,15 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                   onClick={() => setChatWithModal((prev) => ({ ...prev, showCodePanel: !prev.showCodePanel }))}
                 >
                   {chatWithModal.showCodePanel ? '隐藏代码' : '显示代码'}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                  onClick={dockChatWithToRight}
+                  disabled={chatWithModal.loading || !activeChatWithBubble?.sessionId}
+                  title="固定为 Workstudio 右侧子窗口"
+                >
+                  固定到右侧
                 </button>
                 <button
                   type="button"
@@ -14419,6 +14506,80 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
                 )}
               </DndContext>
             </div>
+            {chatWithDock.open && (
+              <div className="flex w-[440px] min-w-[320px] max-w-[42vw] shrink-0 flex-col border-l border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-950">
+                <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-4 py-3 dark:border-gray-800">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      {activeDockedChatWithBubble?.title ?? 'Chat with'}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+                      {activeDockedChatWithBubble?.filePath && (
+                        <span className="rounded bg-gray-100 px-2 py-0.5 dark:bg-gray-900/70">
+                          {toWorkstudioRelativePath(activeDockedChatWithBubble.filePath)}
+                        </span>
+                      )}
+                      {formatOutlineRangeLabel(activeDockedChatWithBubble?.range)}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      className="rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                      onClick={() => setChatWithDock((prev) => ({ ...prev, showCodePanel: !prev.showCodePanel }))}
+                    >
+                      {chatWithDock.showCodePanel ? '隐藏代码' : '显示代码'}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                      onClick={openDockedChatWithModal}
+                    >
+                      弹出
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                      onClick={closeChatWithDock}
+                      title="关闭右侧子窗口"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                {chatWithDock.showCodePanel && (
+                  <div className="shrink-0 border-b border-gray-100 bg-gray-50/80 dark:border-gray-800 dark:bg-gray-900/20">
+                    <div className="px-4 py-2 text-[11px] font-semibold text-gray-700 dark:text-gray-200">代码上下文</div>
+                    <pre className="max-h-56 overflow-auto px-4 pb-3 text-[11px] leading-5 whitespace-pre-wrap break-words text-gray-800 dark:text-gray-100">{(() => {
+                      const raw = activeDockedChatWithBubble?.selectionTextSnapshot ?? '';
+                      const limit = 12000;
+                      return raw.length > limit ? `${raw.slice(0, limit)}
+…（已截断）` : raw || '暂无代码快照';
+                    })()}</pre>
+                  </div>
+                )}
+
+                <div className="min-h-0 flex-1 bg-white dark:bg-gray-950">
+                  {activeDockedChatWithBubble?.sessionId ? (
+                    <ChatView
+                      sessionId={activeDockedChatWithBubble.sessionId}
+                      autoFocus
+                      streamVisibilityTier="visible"
+                      initialOutlineDisplayMode="overlay"
+                      persistOutlineDisplayMode={false}
+                      allowOutlineDisplayModeToggle={false}
+                      showChatWithScopeBanner={false}
+                      showWorkstudioControl={false}
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center px-4 text-sm text-gray-500 dark:text-gray-400">
+                      未找到可用的 Chat with 会话
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
           </div>
 
