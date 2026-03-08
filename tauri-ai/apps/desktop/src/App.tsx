@@ -72,12 +72,13 @@ function App() {
   const webTitleOverride = windowParams.webTitle;
   const terminalWorkdirOverride = windowParams.terminalWorkdir;
   const terminalTitleOverride = windowParams.terminalTitle;
-  // Standalone non-chat views should not start/restore chat sessions or stream listeners.
-  // Otherwise opening a "文本/导图" window can create or mutate chat sessions unexpectedly.
+  // Standalone non-chat views should not start/restore full chat runtime.
+  // Workstudio 窗口本身不需要默认聊天页，但嵌入式 Chat with 仍依赖统一的流式事件监听。
   const isWorkstudioWindow = viewOverride === 'workstudio';
   const isJsonAnalyzerWindow = viewOverride === 'json_analyzer';
   const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
   const shouldInitChatRuntime = !isWorkstudioWindow && !isJsonAnalyzerWindow && !isDragGhostWindow;
+  const shouldInitChatStreamListeners = !isJsonAnalyzerWindow && !isDragGhostWindow;
 
   // Standalone Workstudio window: ensure native window title contains "Workstudio".
   // This avoids macOS Window menu showing the default HTML <title> ("Tauri + React + Typescript")
@@ -1157,8 +1158,8 @@ function App() {
   */
   useEffect(() => {
     if (isDragGhostWindow) return;
-    // Initialize chat stream listeners only for chat-capable windows.
-    if (shouldInitChatRuntime) {
+    // Workstudio 独立窗口虽然不启动完整 chat runtime，但内嵌 Chat with 仍需要接收 run:event。
+    if (shouldInitChatStreamListeners) {
       initStreamListeners();
     }
     // Load configuration from backend
@@ -1172,7 +1173,7 @@ function App() {
           console.error('Failed to load conversations:', err);
         });
     }
-  }, [loadConfig, loadConversations, shouldInitChatRuntime, isDragGhostWindow]);
+  }, [loadConfig, loadConversations, shouldInitChatRuntime, shouldInitChatStreamListeners, isDragGhostWindow]);
 
   // ---------------------------------------------------------------------------
   // 配置同步（跨窗口）

@@ -2,6 +2,12 @@ import type { CodeSnippetContentPart, WorkstudioCodeAnchor } from '../types';
 
 const normalizeFsPath = (value: string): string => value.replace(/\\/g, '/');
 
+const formatChatWithRangeLabel = (anchor: WorkstudioCodeAnchor): string | null => {
+  const range = anchor.range;
+  if (!range) return null;
+  return `L${range.startLine}:${range.startColumn} - L${range.endLine}:${range.endColumn}`;
+};
+
 export const formatChatWithTitle = (anchor: WorkstudioCodeAnchor): string => {
   const normalized = normalizeFsPath(anchor.filePath || '');
   const base = normalized.split('/').filter(Boolean).pop() || normalized || 'Chat with';
@@ -31,3 +37,25 @@ export const buildChatWithSnippet = (
       }
     : undefined,
 });
+
+export const buildChatWithDefaultDraft = (
+  anchor: WorkstudioCodeAnchor,
+  snippetId: string
+): string => {
+  const lines = ['请基于当前选中的代码片段回答我的问题。', ''];
+  const normalizedPath = normalizeFsPath(anchor.filePath || '').trim();
+  const normalizedLabel = String(anchor.label ?? '').trim();
+  const normalizedLanguageId = String(anchor.languageId ?? '').trim();
+  const rangeLabel = formatChatWithRangeLabel(anchor);
+
+  if (normalizedLabel) lines.push(`选区：${normalizedLabel}`);
+  if (normalizedPath) lines.push(`文件路径：${normalizedPath}`);
+  if (rangeLabel) lines.push(`代码范围：${rangeLabel}`);
+  if (normalizedLanguageId) lines.push(`语言：${normalizedLanguageId}`);
+
+  lines.push('选中代码：');
+  lines.push(`@{snippet:${snippetId}}`);
+  lines.push('');
+  lines.push('问题：');
+  return lines.join('\n');
+};

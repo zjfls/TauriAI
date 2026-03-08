@@ -55,6 +55,11 @@ interface ChatViewProps {
   /** 仅在“当前聚焦 Pane 的激活会话”里自动聚焦输入框（避免 keep-alive 多实例抢焦点） */
   autoFocus?: boolean;
   streamVisibilityTier?: SessionStreamVisibilityTier;
+  initialOutlineDisplayMode?: ChatOutlineDisplayMode;
+  persistOutlineDisplayMode?: boolean;
+  allowOutlineDisplayModeToggle?: boolean;
+  showChatWithScopeBanner?: boolean;
+  showWorkstudioControl?: boolean;
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
@@ -86,7 +91,16 @@ const OutlineOverlayModeIcon = () => (
   </svg>
 );
 
-export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false, streamVisibilityTier = 'hidden' }) => {
+export const ChatView: React.FC<ChatViewProps> = ({
+  sessionId,
+  autoFocus = false,
+  streamVisibilityTier = 'hidden',
+  initialOutlineDisplayMode,
+  persistOutlineDisplayMode = true,
+  allowOutlineDisplayModeToggle = true,
+  showChatWithScopeBanner = true,
+  showWorkstudioControl = true,
+}) => {
   // Get session from SessionStore
 		  const {
 		    session,
@@ -130,7 +144,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const [showToolSessions, setShowToolSessions] = useState(false);
   const [selectedRequestMessageId, setSelectedRequestMessageId] = useState<string | null>(null);
   const [outlineOpen, setOutlineOpen] = useState(false);
-  const [outlineDisplayMode, setOutlineDisplayMode] = useState<ChatOutlineDisplayMode>(() => loadChatOutlineDisplayMode());
+  const [outlineDisplayMode, setOutlineDisplayMode] = useState<ChatOutlineDisplayMode>(() =>
+    initialOutlineDisplayMode ?? loadChatOutlineDisplayMode()
+  );
   const [editingQueueMessageId, setEditingQueueMessageId] = useState<string | null>(null);
   const [editingQueueContent, setEditingQueueContent] = useState('');
 
@@ -143,13 +159,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const chatOpenProfileScheduledRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (!persistOutlineDisplayMode) return;
     if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY, outlineDisplayMode);
     } catch {
       // ignore
     }
-  }, [outlineDisplayMode]);
+  }, [outlineDisplayMode, persistOutlineDisplayMode]);
+
+  useEffect(() => {
+    if (!initialOutlineDisplayMode) return;
+    setOutlineDisplayMode(initialOutlineDisplayMode);
+  }, [initialOutlineDisplayMode]);
 
   // 仅对“当前聚焦 Pane 的激活会话”自动聚焦，避免 keep-alive 多会话同时挂载时互相抢焦点。
   useEffect(() => {
@@ -1715,7 +1737,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
             )}
 
             <div className="flex min-w-0 items-center gap-1">
-              {workspaceEnabled && (
+              {workspaceEnabled && showWorkstudioControl && (
                 <div ref={workstudioMenuRef} className="relative flex min-w-0 items-center gap-1">
                   <WorkstudioSecurityModal
                     isOpen={workstudioSecurityOpen}
@@ -1801,21 +1823,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
                 </span>
               </button>
 
-              <button
-                type="button"
-                onClick={() => setOutlineDisplayMode((mode) => (mode === 'sidebar' ? 'overlay' : 'sidebar'))}
-                ref={outlineModeButtonRef}
-                className={[
-                  'order-first inline-flex h-7 w-7 items-center justify-center rounded border border-transparent p-0 text-gray-500 hover:bg-gray-100',
-                  'dark:text-gray-400 dark:hover:bg-gray-800',
-                  outlineDisplayMode === 'sidebar' ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200' : '',
-                ].join(' ')}
-                aria-label={outlineDisplayMode === 'sidebar' ? '切换为浮层目录模式' : '切换为侧栏目录模式'}
-                title={outlineDisplayMode === 'sidebar' ? '切换为浮层目录模式' : '切换为侧栏目录模式'}
-              >
-                {outlineDisplayMode === 'sidebar' ? <OutlineSidebarModeIcon /> : <OutlineOverlayModeIcon />}
-
-              </button>
+              {allowOutlineDisplayModeToggle && (
+                <button
+                  type="button"
+                  onClick={() => setOutlineDisplayMode((mode) => (mode === 'sidebar' ? 'overlay' : 'sidebar'))}
+                  ref={outlineModeButtonRef}
+                  className={[
+                    'order-first inline-flex h-7 w-7 items-center justify-center rounded border border-transparent p-0 text-gray-500 hover:bg-gray-100',
+                    'dark:text-gray-400 dark:hover:bg-gray-800',
+                    outlineDisplayMode === 'sidebar' ? 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-200' : '',
+                  ].join(' ')}
+                  aria-label={outlineDisplayMode === 'sidebar' ? '切换为浮层目录模式' : '切换为侧栏目录模式'}
+                  title={outlineDisplayMode === 'sidebar' ? '切换为浮层目录模式' : '切换为侧栏目录模式'}
+                >
+                  {outlineDisplayMode === 'sidebar' ? <OutlineSidebarModeIcon /> : <OutlineOverlayModeIcon />}
+                </button>
+              )}
             </div>
           </div>
 
@@ -1886,7 +1909,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
               </div>
             </div>
           )}
-          {chatWithScope && (
+          {showChatWithScopeBanner && chatWithScope && (
             <div className="border-b border-blue-100 bg-blue-50/70 px-4 py-3 text-xs dark:border-blue-900/40 dark:bg-blue-950/30">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
