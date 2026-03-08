@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Plus, Wand2 } from "lucide-react";
 import { useLayoutSize } from "../lib/breakpoints";
 import { isTauriRuntime, tauriInvoke } from "../lib/tauri";
@@ -8,9 +8,6 @@ import { Input } from "../ui/Input";
 import { RichText } from "../ui/RichText";
 import { usePracticeStore } from "../../../common/src/practice/store";
 import type {
-  InkPoint,
-  InkState,
-  InkStroke,
   PracticeAnswer,
   PracticeAnswerImage,
   PracticeQuestion,
@@ -39,8 +36,11 @@ import {
   ScrollableInkPad,
   createEmptyInkState,
 } from "../../../common/src/practice/ink/ScrollableInkPad";
+import { InkBrushPreview } from "../../../common/src/practice/ink/InkBrushPalette";
+import { renderInkStateToDataUrl as renderInkToDataUrl } from "../../../common/src/practice/ink/rendering";
 import {
   DEFAULT_INK_BRUSH_ID,
+  getInkBrushMenuLabel,
   INK_BRUSH_PRESETS,
 } from "../../../common/src/practice/ink/brushes";
 import { buildPracticeQuestionChatPrompt } from "../../../common/src/practice/chatPrompt";
@@ -66,6 +66,19 @@ const INK_TEMPLATES: Array<{ value: InkTemplate; label: string }> = [
 ];
 const INK_SIZE_MIN = 1;
 const INK_SIZE_MAX = 24;
+const INK_SIZE_STEP = 0.1;
+const INK_SIZE_HOLD_DELAY_MS = 260;
+const INK_SIZE_HOLD_INTERVAL_MS = 60;
+
+function normalizeInkSize(value: number): number {
+  return Math.round(
+    Math.min(INK_SIZE_MAX, Math.max(INK_SIZE_MIN, value)) * 10,
+  ) / 10;
+}
+
+function formatInkSize(value: number): string {
+  return value.toFixed(1);
+}
 const MAX_PASTED_ANSWER_IMAGE_COUNT = 4;
 const MAX_PASTED_ANSWER_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_PASTED_ANSWER_IMAGE_EDGE = 1600;
@@ -75,130 +88,6 @@ const DRAWING_BRUSH_PRESETS = INK_BRUSH_PRESETS.filter(
 const ERASER_BRUSH_PRESET = INK_BRUSH_PRESETS.find(
   (item) => item.tool === "eraser",
 );
-
-function drawInkSegment(
-  ctx: CanvasRenderingContext2D,
-  stroke: InkStroke,
-  a: InkPoint,
-  b: InkPoint,
-) {
-  const rawSize =
-    typeof stroke.size === "number" && Number.isFinite(stroke.size)
-      ? stroke.size
-      : 1;
-  const baseSize = Math.max(0.5, Math.min(64, rawSize));
-  const opacity =
-    typeof stroke.opacity === "number"
-      ? Math.max(0.05, Math.min(1, stroke.opacity))
-      : stroke.tool === "pencil"
-        ? 0.65
-        : 1;
-  const pressureSensitivity =
-    typeof stroke.pressureSensitivity === "number"
-      ? Math.max(0, Math.min(1, stroke.pressureSensitivity))
-      : 0;
-  const pressure = Math.max(
-    0.1,
-    Math.min(
-      1,
-      (typeof b.pressure === "number" && b.pressure > 0
-        ? b.pressure
-        : undefined) ??
-        (typeof a.pressure === "number" && a.pressure > 0
-          ? a.pressure
-          : undefined) ??
-        0.5,
-    ),
-  );
-  const lineWidth =
-    stroke.tool === "eraser"
-      ? Math.max(1, baseSize)
-      : Math.max(
-          1,
-          baseSize * (1 - pressureSensitivity + pressureSensitivity * pressure),
-        );
-
-  ctx.save();
-  if (stroke.tool === "eraser") {
-    ctx.globalCompositeOperation = "destination-out";
-    ctx.strokeStyle = "rgba(0,0,0,1)";
-    ctx.globalAlpha = 1;
-  } else {
-    ctx.globalCompositeOperation = stroke.blendMode ?? "source-over";
-    ctx.strokeStyle = stroke.color || "#111827";
-    ctx.globalAlpha = opacity;
-  }
-  ctx.lineWidth = lineWidth;
-  ctx.lineCap = stroke.lineCap ?? "round";
-  ctx.lineJoin = stroke.lineJoin ?? "round";
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function computeInkBounds(
-  strokes: InkStroke[],
-): { minX: number; minY: number; maxX: number; maxY: number } | null {
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  for (const stroke of strokes) {
-    for (const point of stroke.points) {
-      minX = Math.min(minX, point.x);
-      minY = Math.min(minY, point.y);
-      maxX = Math.max(maxX, point.x);
-      maxY = Math.max(maxY, point.y);
-    }
-  }
-  if (
-    !Number.isFinite(minX) ||
-    !Number.isFinite(minY) ||
-    !Number.isFinite(maxX) ||
-    !Number.isFinite(maxY)
-  ) {
-    return null;
-  }
-  return { minX, minY, maxX, maxY };
-}
-
-async function renderInkToDataUrl(ink: InkState): Promise<string | null> {
-  if (typeof document === "undefined") return null;
-  const strokes = Array.isArray(ink?.strokes) ? ink.strokes : [];
-  if (strokes.length === 0) return null;
-  const bounds = computeInkBounds(strokes);
-  if (!bounds) return null;
-
-  const margin = 24;
-  const width = Math.max(1, Math.ceil(bounds.maxX - bounds.minX + margin * 2));
-  const height = Math.max(1, Math.ceil(bounds.maxY - bounds.minY + margin * 2));
-  const maxEdge = Math.max(width, height);
-  const scale = maxEdge > 1536 ? 1536 / maxEdge : 1;
-  const outW = Math.max(1, Math.round(width * scale));
-  const outH = Math.max(1, Math.round(height * scale));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-
-  ctx.setTransform(scale, 0, 0, scale, 0, 0);
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, outW / scale, outH / scale);
-  ctx.translate(margin - bounds.minX, margin - bounds.minY);
-
-  for (const stroke of strokes) {
-    const points = stroke.points || [];
-    if (points.length < 2) continue;
-    for (let index = 1; index < points.length; index += 1) {
-      drawInkSegment(ctx, stroke, points[index - 1]!, points[index]!);
-    }
-  }
-  return canvas.toDataURL("image/png");
-}
 
 type QuestionImageFeedback = {
   kind: "success" | "error";
@@ -418,6 +307,77 @@ async function renderQuestionToDataUrl(
   return canvas.toDataURL("image/png");
 }
 
+function formatPracticeError(error: unknown, fallback = "未知错误"): string {
+  return String(error instanceof Error ? error.message : (error ?? fallback));
+}
+
+function buildQuestionImageFilename(question: PracticeQuestion, index: number): string {
+  const typeSlug =
+    question.type === "multiple_choice"
+      ? "choice"
+      : question.type === "calculation"
+        ? "calculation"
+        : question.type === "proof"
+          ? "proof"
+          : "qa";
+  return `practice-question-${index + 1}-${typeSlug}.png`;
+}
+
+function basenameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || path;
+}
+
+function isUnsupportedMobileClipboardImageCopy(message: string): boolean {
+  return /当前移动端暂不支持复制 PNG 到系统剪贴板/.test(message);
+}
+
+async function savePngDataUrlToLocal(
+  dataUrl: string,
+  suggestedName: string,
+): Promise<string | null> {
+  if (isTauriRuntime()) {
+    try {
+      return await tauriInvoke<string>("save_png_base64_to_local", {
+        pngBase64: dataUrl,
+        suggestedName,
+      });
+    } catch (error) {
+      return tauriInvoke<string>("save_png_base64_to_local", {
+        png_base64: dataUrl,
+        suggested_name: suggestedName,
+      } as any).catch((fallbackError) => {
+        throw fallbackError ?? error;
+      });
+    }
+  }
+
+  if (typeof document === "undefined") {
+    return null;
+  }
+
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = suggestedName;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  return suggestedName;
+}
+
+function formatClipboardReadError(error: unknown): string {
+  const message = formatPracticeError(error, "读取剪贴板失败");
+  if (/read permission denied/i.test(message) || /notallowed/i.test(message)) {
+    return "系统不允许应用直接读取剪贴板图片，请点击下方区域后使用系统粘贴，或改用“选择图片”。";
+  }
+  if (/当前系统不支持直接读取剪贴板图片/.test(message)) {
+    return "当前环境不支持直接读取剪贴板图片，请点击下方区域后使用系统粘贴，或改用“选择图片”。";
+  }
+  return message;
+}
+
 async function copyPngDataUrlToClipboard(dataUrl: string): Promise<void> {
   let tauriClipboardError: unknown = null;
   if (isTauriRuntime()) {
@@ -441,9 +401,11 @@ async function copyPngDataUrlToClipboard(dataUrl: string): Promise<void> {
     }
   }
 
-  const clipboardWrite = (navigator.clipboard as any)?.write as
-    | undefined
-    | ((items: any[]) => Promise<void>);
+  const clipboard = (navigator as any)?.clipboard;
+  const clipboardWrite =
+    typeof clipboard?.write === "function"
+      ? clipboard.write.bind(clipboard)
+      : undefined;
   const ClipboardItemCtor = (window as any).ClipboardItem as any;
   if (!clipboardWrite || !ClipboardItemCtor) {
     if (tauriClipboardError) {
@@ -606,12 +568,31 @@ async function extractPracticeAnswerImagesFromDataTransfer(
   return images;
 }
 
+async function createPracticeAnswerImagesFromFiles(
+  files: Iterable<File>,
+): Promise<PracticeAnswerImage[]> {
+  const images: PracticeAnswerImage[] = [];
+  for (const file of Array.from(files)) {
+    if (!file.type.startsWith("image/")) continue;
+    images.push(
+      await createPracticeAnswerImageFromBlob(
+        file,
+        file.name || `本地图片 ${images.length + 1}`,
+      ),
+    );
+    if (images.length >= MAX_PASTED_ANSWER_IMAGE_COUNT) break;
+  }
+  return images;
+}
+
 async function readPracticeAnswerImagesFromClipboard(): Promise<
   PracticeAnswerImage[]
 > {
-  const read = (navigator.clipboard as any)?.read as
-    | undefined
-    | (() => Promise<any[]>);
+  const clipboard = (navigator as any)?.clipboard;
+  const read =
+    typeof clipboard?.read === "function"
+      ? clipboard.read.bind(clipboard)
+      : undefined;
   if (!read) {
     throw new Error(
       "当前系统不支持直接读取剪贴板图片，请点击下方粘贴区后使用系统粘贴。",
@@ -736,6 +717,7 @@ export function PracticePage({
   const [fullscreenPasteBusy, setFullscreenPasteBusy] = useState(false);
   const [fullscreenPasteStatus, setFullscreenPasteStatus] = useState("");
   const fullscreenPasteTargetRef = useRef<HTMLDivElement | null>(null);
+  const fullscreenImagePickerInputRef = useRef<HTMLInputElement | null>(null);
   const [copyQuestionImageFeedback, setCopyQuestionImageFeedback] = useState<
     Record<string, QuestionImageFeedback>
   >({});
@@ -744,6 +726,7 @@ export function PracticePage({
   >({});
   const [quizSubmitBusy, setQuizSubmitBusy] = useState(false);
   const [quizSubmitError, setQuizSubmitError] = useState("");
+  const preferLocalImagePicker = isTauriRuntime();
 
   useEffect(() => {
     setQuizSubmitBusy(false);
@@ -832,9 +815,10 @@ export function PracticePage({
       preferred?.id ?? DRAWING_BRUSH_PRESETS[0]?.id ?? DEFAULT_INK_BRUSH_ID
     );
   });
-  const [inkUseEraser, setInkUseEraser] = useState<boolean>(false);
+  const [inkUseEraser, setInkUseEraser] = useState(false);
   const [inkPenColor, setInkPenColor] = useState<string>(INK_COLORS[0]);
   const [inkPenSize, setInkPenSize] = useState<number>(5);
+  const [inkEraserSize, setInkEraserSize] = useState<number>(16);
   const [inkTemplate, setInkTemplate] = useState<InkTemplate>("ruled");
   const [fullscreenInkTarget, setFullscreenInkTarget] = useState<{
     quizId: string;
@@ -844,10 +828,65 @@ export function PracticePage({
     () =>
       (inkUseEraser ? ERASER_BRUSH_PRESET : undefined) ??
       DRAWING_BRUSH_PRESETS.find((item) => item.id === inkDrawBrushId) ??
+      DRAWING_BRUSH_PRESETS.find((item) => item.id === DEFAULT_INK_BRUSH_ID) ??
       DRAWING_BRUSH_PRESETS[0] ??
       ERASER_BRUSH_PRESET ??
-      INK_BRUSH_PRESETS[0],
-    [inkUseEraser, inkDrawBrushId],
+      INK_BRUSH_PRESETS[0]!,
+    [inkDrawBrushId, inkUseEraser],
+  );
+  const activeInkSize = inkUseEraser ? inkEraserSize : inkPenSize;
+  const inkSizeHoldTimeoutRef = useRef<number | null>(null);
+  const inkSizeHoldIntervalRef = useRef<number | null>(null);
+
+  const stopInkSizeAdjust = useCallback(() => {
+    if (inkSizeHoldTimeoutRef.current !== null) {
+      window.clearTimeout(inkSizeHoldTimeoutRef.current);
+      inkSizeHoldTimeoutRef.current = null;
+    }
+    if (inkSizeHoldIntervalRef.current !== null) {
+      window.clearInterval(inkSizeHoldIntervalRef.current);
+      inkSizeHoldIntervalRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => () => stopInkSizeAdjust(), [stopInkSizeAdjust]);
+
+  const applyInkSize = useCallback(
+    (value: number) => {
+      const nextSize = normalizeInkSize(value);
+      if (inkUseEraser) {
+        setInkEraserSize(nextSize);
+        return;
+      }
+      setInkPenSize(nextSize);
+    },
+    [inkUseEraser],
+  );
+
+  const adjustInkSize = useCallback(
+    (delta: number) => {
+      if (inkUseEraser) {
+        setInkEraserSize((prev) => normalizeInkSize(prev + delta));
+        return;
+      }
+      setInkPenSize((prev) => normalizeInkSize(prev + delta));
+    },
+    [inkUseEraser],
+  );
+
+  const startInkSizeAdjust = useCallback(
+    (delta: number) => {
+      adjustInkSize(delta);
+      stopInkSizeAdjust();
+      window.addEventListener("pointerup", stopInkSizeAdjust, { once: true });
+      window.addEventListener("pointercancel", stopInkSizeAdjust, { once: true });
+      inkSizeHoldTimeoutRef.current = window.setTimeout(() => {
+        inkSizeHoldIntervalRef.current = window.setInterval(() => {
+          adjustInkSize(delta);
+        }, INK_SIZE_HOLD_INTERVAL_MS);
+      }, INK_SIZE_HOLD_DELAY_MS);
+    },
+    [adjustInkSize, stopInkSizeAdjust],
   );
 
   const fullscreenInkQuestion = useMemo(() => {
@@ -1122,18 +1161,74 @@ export function PracticePage({
         if (!dataUrl) {
           throw new Error("题图生成失败");
         }
-        await copyPngDataUrlToClipboard(dataUrl);
-        setCopyQuestionImageFeedback((prev) => ({
-          ...prev,
-          [question.id]: { kind: "success", message: "题目已复制为图片" },
-        }));
-      } catch (error) {
-        const message = String(
-          error instanceof Error ? error.message : (error ?? "复制失败"),
+        const suggestedName = buildQuestionImageFilename(question, index);
+        const [saveResult, copyResult] = await Promise.allSettled([
+          savePngDataUrlToLocal(dataUrl, suggestedName),
+          copyPngDataUrlToClipboard(dataUrl),
+        ]);
+        const saveError =
+          saveResult.status === "rejected"
+            ? formatPracticeError(saveResult.reason, "保存失败")
+            : "";
+        const copyError =
+          copyResult.status === "rejected"
+            ? formatPracticeError(copyResult.reason, "复制失败")
+            : "";
+        const copyUnsupportedOnMobile = isUnsupportedMobileClipboardImageCopy(
+          copyError,
         );
+
+        if (copyResult.status === "fulfilled" && saveResult.status === "fulfilled") {
+          const savedLabel = saveResult.value
+            ? basenameFromPath(saveResult.value)
+            : suggestedName;
+          setCopyQuestionImageFeedback((prev) => ({
+            ...prev,
+            [question.id]: {
+              kind: "success",
+              message: `题图已复制，并保存到相册：${savedLabel}`,
+            },
+          }));
+        } else if (copyResult.status === "fulfilled") {
+          setCopyQuestionImageFeedback((prev) => ({
+            ...prev,
+            [question.id]: {
+              kind: "success",
+              message: `题图已复制，但保存到相册失败：${saveError}`,
+            },
+          }));
+        } else if (saveResult.status === "fulfilled") {
+          const savedLabel = saveResult.value
+            ? basenameFromPath(saveResult.value)
+            : suggestedName;
+          setCopyQuestionImageFeedback((prev) => ({
+            ...prev,
+            [question.id]: copyUnsupportedOnMobile
+              ? {
+                  kind: "success",
+                  message: `题图已保存到相册：${savedLabel}（当前移动端不支持直接复制图片到系统剪贴板）`,
+                }
+              : {
+                  kind: "error",
+                  message: `题图已保存到相册（${savedLabel}），但复制失败：${copyError}`,
+                },
+          }));
+        } else {
+          setCopyQuestionImageFeedback((prev) => ({
+            ...prev,
+            [question.id]: {
+              kind: "error",
+              message: `复制题图失败：${copyError}；本地保存也失败：${saveError}`,
+            },
+          }));
+        }
+      } catch (error) {
         setCopyQuestionImageFeedback((prev) => ({
           ...prev,
-          [question.id]: { kind: "error", message: `复制题图失败：${message}` },
+          [question.id]: {
+            kind: "error",
+            message: `复制题图失败：${formatPracticeError(error, "复制失败")}`,
+          },
         }));
       } finally {
         setCopyQuestionImageBusy((prev) => ({ ...prev, [question.id]: false }));
@@ -1217,15 +1312,45 @@ export function PracticePage({
       appendFullscreenAnswerImages(images);
     } catch (error) {
       fullscreenPasteTargetRef.current?.focus();
-      setFullscreenPasteStatus(
-        String(
-          error instanceof Error ? error.message : (error ?? "读取剪贴板失败"),
-        ),
-      );
+      setFullscreenPasteStatus(formatClipboardReadError(error));
     } finally {
       setFullscreenPasteBusy(false);
     }
   }, [appendFullscreenAnswerImages]);
+
+  const handleFullscreenImagePickerChange = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files ? Array.from(event.target.files) : [];
+      event.target.value = "";
+      if (files.length === 0) {
+        return;
+      }
+
+      setFullscreenPasteBusy(true);
+      setFullscreenPasteStatus("");
+      try {
+        const images = await createPracticeAnswerImagesFromFiles(files);
+        if (images.length === 0) {
+          setFullscreenPasteStatus("未选择可用图片，请重新选择图片文件。");
+          return;
+        }
+        appendFullscreenAnswerImages(images);
+      } catch (error) {
+        setFullscreenPasteStatus(`导入图片失败：${formatPracticeError(error)}`);
+      } finally {
+        setFullscreenPasteBusy(false);
+      }
+    },
+    [appendFullscreenAnswerImages],
+  );
+
+  const handleFullscreenImageButton = useCallback(() => {
+    if (preferLocalImagePicker) {
+      fullscreenImagePickerInputRef.current?.click();
+      return;
+    }
+    void handleFullscreenPasteButton();
+  }, [handleFullscreenPasteButton, preferLocalImagePicker]);
 
   const removeFullscreenAnswerImage = useCallback(
     (imageId: string) => {
@@ -1277,8 +1402,6 @@ export function PracticePage({
     const err = gradeError[q.id] || "";
     const copyBusy = Boolean(copyQuestionImageBusy[q.id]);
     const copyFeedback = copyQuestionImageFeedback[q.id];
-    const copyError =
-      copyFeedback?.kind === "error" ? copyFeedback.message : "";
     const copySuccess = copyFeedback?.kind === "success";
     const chatCopyBusy = Boolean(copyQuestionToChatBusy[q.id]);
     const isFullscreenInkOpen =
@@ -1360,8 +1483,17 @@ export function PracticePage({
             <div className="mt-2 text-sm text-white/90 max-w-full overflow-x-hidden">
               <RichText content={q.prompt || "（题目为空）"} />
             </div>
-            {copyError ? (
-              <div className="mt-2 text-xs text-amber-200">{copyError}</div>
+            {copyFeedback ? (
+              <div
+                className={clsx(
+                  "mt-2 text-xs",
+                  copyFeedback.kind === "error"
+                    ? "text-amber-200"
+                    : "text-emerald-100/90",
+                )}
+              >
+                {copyFeedback.message}
+              </div>
             ) : null}
           </div>
         </div>
@@ -1609,7 +1741,7 @@ export function PracticePage({
                         type="number"
                         min={0}
                         max={20}
-                        step={1}
+                        step={INK_SIZE_STEP}
                         inputMode="numeric"
                         value={questionCounts[field.type]}
                         onChange={(e) =>
@@ -1733,19 +1865,27 @@ export function PracticePage({
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs text-white/60">笔刷</span>
               <select
-                className="h-8 rounded-md bg-white/5 border border-white/10 px-2 text-[12px] outline-none focus:border-indigo-400"
+                className="h-8 w-[128px] max-w-full rounded-md border border-white/15 bg-white/8 px-2 text-xs text-white outline-none transition-colors focus:border-indigo-300"
                 value={inkDrawBrushId}
                 onChange={(e) => {
                   setInkDrawBrushId(e.target.value);
                   setInkUseEraser(false);
                 }}
               >
-                {DRAWING_BRUSH_PRESETS.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
+                <optgroup label="画笔">
+                  {DRAWING_BRUSH_PRESETS.map((brush) => (
+                    <option key={brush.id} value={brush.id}>
+                      {getInkBrushMenuLabel(brush)}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
+              <InkBrushPreview
+                brush={activeInkBrush}
+                color={inkUseEraser ? "#111827" : inkPenColor}
+                width={52}
+                height={22}
+              />
               <button
                 type="button"
                 className={clsx(
@@ -1756,25 +1896,53 @@ export function PracticePage({
                 )}
                 onClick={() => setInkUseEraser((prev) => !prev)}
                 disabled={!ERASER_BRUSH_PRESET}
-                title="橡皮"
               >
                 橡皮
               </button>
-
               <span className="ml-1 text-xs text-white/60">粗细</span>
+              <button
+                type="button"
+                className="h-8 w-8 rounded-md border border-white/15 bg-white/5 text-sm font-medium text-white/85"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  startInkSizeAdjust(-INK_SIZE_STEP);
+                }}
+                onPointerUp={stopInkSizeAdjust}
+                onPointerCancel={stopInkSizeAdjust}
+                onPointerLeave={stopInkSizeAdjust}
+                onContextMenu={(e) => e.preventDefault()}
+                aria-label="减小笔刷粗细"
+              >
+                -
+              </button>
               <input
                 type="range"
                 min={INK_SIZE_MIN}
                 max={INK_SIZE_MAX}
-                step={1}
-                value={inkPenSize}
-                onChange={(e) => setInkPenSize(Number(e.target.value))}
+                step={INK_SIZE_STEP}
+                value={activeInkSize}
+                onInput={(e) => applyInkSize(e.currentTarget.valueAsNumber)}
+                onChange={(e) => applyInkSize(e.currentTarget.valueAsNumber)}
                 className="h-8 w-28 accent-indigo-400"
               />
-              <span className="text-xs text-white/70 w-6 text-right">
-                {inkPenSize}
+              <button
+                type="button"
+                className="h-8 w-8 rounded-md border border-white/15 bg-white/5 text-sm font-medium text-white/85"
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  startInkSizeAdjust(INK_SIZE_STEP);
+                }}
+                onPointerUp={stopInkSizeAdjust}
+                onPointerCancel={stopInkSizeAdjust}
+                onPointerLeave={stopInkSizeAdjust}
+                onContextMenu={(e) => e.preventDefault()}
+                aria-label="增大笔刷粗细"
+              >
+                +
+              </button>
+              <span className="w-12 text-right text-xs text-white/70">
+                {formatInkSize(activeInkSize)}
               </span>
-
               <span className="ml-1 text-xs text-white/60">颜色</span>
               {INK_COLORS.map((color) => (
                 <button
@@ -1782,16 +1950,18 @@ export function PracticePage({
                   type="button"
                   className={clsx(
                     "h-7 w-7 rounded-full border transition-colors",
-                    inkPenColor === color
-                      ? "border-white/90"
-                      : "border-white/25",
+                    inkUseEraser
+                      ? "cursor-not-allowed border-white/10 opacity-40"
+                      : inkPenColor === color
+                        ? "border-white/90"
+                        : "border-white/25",
                   )}
                   style={{ backgroundColor: color }}
                   onClick={() => setInkPenColor(color)}
                   title={`颜色 ${color}`}
+                  disabled={inkUseEraser}
                 />
               ))}
-
               <span className="ml-1 text-xs text-white/60">纸张</span>
               {INK_TEMPLATES.map((item) => (
                 <button
@@ -1808,14 +1978,19 @@ export function PracticePage({
                   {item.label}
                 </button>
               ))}
-
               <button
                 type="button"
                 className="ml-auto h-8 px-3 rounded-md border border-emerald-300/25 bg-emerald-500/15 text-xs text-emerald-100 disabled:opacity-60"
-                onClick={() => void handleFullscreenPasteButton()}
+                onClick={handleFullscreenImageButton}
                 disabled={fullscreenPasteBusy}
               >
-                {fullscreenPasteBusy ? "读取中…" : "粘贴图片"}
+                {preferLocalImagePicker
+                  ? fullscreenPasteBusy
+                    ? "处理中…"
+                    : "选择图片"
+                  : fullscreenPasteBusy
+                    ? "读取中…"
+                    : "粘贴图片"}
               </button>
             </div>
           </div>
@@ -1835,9 +2010,21 @@ export function PracticePage({
             <div className="flex items-center justify-between gap-3">
               <div className="text-xs text-white/60">图片答案</div>
               <div className="text-[11px] text-white/45">
-                支持系统粘贴或按钮读取剪贴板
+                {preferLocalImagePicker
+                  ? "支持系统粘贴或本地选择图片"
+                  : "支持系统粘贴或按钮读取剪贴板"}
               </div>
             </div>
+            <input
+              ref={fullscreenImagePickerInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={(event) => {
+                void handleFullscreenImagePickerChange(event);
+              }}
+            />
             <div
               ref={fullscreenPasteTargetRef}
               contentEditable
@@ -1853,7 +2040,9 @@ export function PracticePage({
                 event.currentTarget.textContent = "";
               }}
             >
-              点击这里后使用系统粘贴图片，或直接点上方“粘贴图片”。
+              {preferLocalImagePicker
+                ? "点击这里后使用系统粘贴图片，或直接点上方“选择图片”。"
+                : "点击这里后使用系统粘贴图片，或直接点上方“粘贴图片”。"}
             </div>
             {fullscreenPasteStatus ? (
               <div
@@ -1924,7 +2113,7 @@ export function PracticePage({
               tool={activeInkBrush.tool}
               brushId={activeInkBrush.id}
               penColor={inkPenColor}
-              penSize={inkPenSize}
+              penSize={activeInkSize}
             />
           </div>
         </div>

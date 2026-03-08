@@ -5005,6 +5005,7 @@ dependencies = [
  "filetime",
  "futures",
  "image",
+ "jni",
  "jsonschema",
  "muda",
  "notify",

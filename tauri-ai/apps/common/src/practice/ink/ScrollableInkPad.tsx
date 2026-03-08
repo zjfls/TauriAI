@@ -1,6 +1,16 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { InkPoint, InkState, InkStroke, InkToolKind } from "../types";
-import { findInkBrushPreset } from "./brushes";
+import { findInkBrushPreset, type InkBrushPreset } from "./brushes";
+import {
+  PAPER_COLOR,
+  createInkStrokeRuntime,
+  drawAllStrokes,
+  drawInkStrokePoint,
+  drawInkStrokeSegmentRuntime,
+  redrawAll,
+  redrawPaperBackground,
+  type InkStrokeRuntime,
+} from "./rendering";
 
 function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(" ");
@@ -65,17 +75,6 @@ type CanvasRectLike = {
   top: number;
 };
 
-type ResolvedStrokeStyle = {
-  isEraser: boolean;
-  compositeOperation: GlobalCompositeOperation;
-  strokeStyle: string;
-  globalAlpha: number;
-  lineCap: CanvasLineCap;
-  lineJoin: CanvasLineJoin;
-  baseSize: number;
-  pressureSensitivity: number;
-};
-
 type InkPerfMetrics = {
   strokeStartedAtMs: number;
   moveEventCount: number;
@@ -87,7 +86,6 @@ type InkPerfMetrics = {
   commitTimeMs: number;
 };
 
-const PAPER_COLOR = "#f6efdb";
 const MIN_VALID_VIEWPORT_PX = 50;
 const MAX_INK_CANVAS_DPR = 2;
 
@@ -136,6 +134,24 @@ function readCanvasRect(canvas: HTMLCanvasElement): CanvasRectLike {
   return { left: rect.left, top: rect.top };
 }
 
+function computeSampleDistancePx(
+  brush: InkBrushPreset | undefined,
+  penSize: number,
+): number {
+  const scaledSize = Math.max(0.5, penSize * (brush?.sizeScale ?? 1));
+  const profile = brush?.tipProfile;
+
+  if (profile === "highlighter" || profile === "marker_chisel") {
+    return clamp(scaledSize * 0.18, 0.8, 1.6);
+  }
+
+  if (profile === "brush_calligraphy") {
+    return clamp(scaledSize * 0.12, 0.45, 0.95);
+  }
+
+  return clamp(scaledSize * 0.08, 0.35, 0.75);
+}
+
 function getPointFromPointerSample(
   e: PointerSampleLike,
   rect: CanvasRectLike,
@@ -147,127 +163,6 @@ function getPointFromPointerSample(
   const pressure = typeof e.pressure === "number" && e.pressure > 0 ? e.pressure : undefined;
   const twist = typeof (e as any).twist === "number" ? (e as any).twist : undefined;
   return { x, y, t: Date.now(), pressure, tiltX, tiltY, twist };
-}
-
-function resolveStrokeStyle(stroke: InkStroke): ResolvedStrokeStyle {
-  const needsBrushFallback =
-    stroke.opacity == null ||
-    stroke.pressureSensitivity == null ||
-    stroke.blendMode == null ||
-    stroke.lineCap == null ||
-    stroke.lineJoin == null;
-  const brush = needsBrushFallback ? findInkBrushPreset(stroke.brushId) : undefined;
-  const isEraser = stroke.tool === "eraser";
-  return {
-    isEraser,
-    compositeOperation: isEraser ? "destination-out" : (stroke.blendMode ?? brush?.blendMode ?? "source-over"),
-    strokeStyle: isEraser
-      ? "rgba(0,0,0,1)"
-      : (typeof stroke.color === "string" && stroke.color.trim() ? stroke.color : "#111827"),
-    globalAlpha: isEraser ? 1 : clamp(stroke.opacity ?? brush?.opacity ?? (stroke.tool === "pencil" ? 0.65 : 1), 0.05, 1),
-    lineCap: stroke.lineCap ?? brush?.lineCap ?? "round",
-    lineJoin: stroke.lineJoin ?? brush?.lineJoin ?? "round",
-    baseSize: clamp(stroke.size, 0.5, 64),
-    pressureSensitivity: clamp(stroke.pressureSensitivity ?? brush?.pressureSensitivity ?? 0, 0, 1),
-  };
-}
-
-function applyStrokeStyle(ctx: CanvasRenderingContext2D, style: ResolvedStrokeStyle): void {
-  ctx.globalCompositeOperation = style.compositeOperation;
-  ctx.strokeStyle = style.strokeStyle;
-  ctx.globalAlpha = style.globalAlpha;
-  ctx.lineCap = style.lineCap;
-  ctx.lineJoin = style.lineJoin;
-}
-
-function drawStrokeSegment(
-  ctx: CanvasRenderingContext2D,
-  style: ResolvedStrokeStyle,
-  a: InkPoint,
-  b: InkPoint,
-) {
-  const rawPressure =
-    (typeof b.pressure === "number" && b.pressure > 0 ? b.pressure : undefined) ??
-    (typeof a.pressure === "number" && a.pressure > 0 ? a.pressure : undefined) ??
-    0.5;
-  const pressure = clamp(rawPressure, 0.1, 1);
-  const width =
-    style.isEraser
-      ? style.baseSize
-      : Math.max(0.5, style.baseSize * (1 - style.pressureSensitivity + style.pressureSensitivity * pressure));
-
-  ctx.lineWidth = width;
-  ctx.beginPath();
-  ctx.moveTo(a.x, a.y);
-  ctx.lineTo(b.x, b.y);
-  ctx.stroke();
-}
-
-function drawAllStrokes(
-  ctx: CanvasRenderingContext2D,
-  strokes: InkStroke[],
-) {
-  for (const s of strokes) {
-    const pts = s.points;
-    if (pts.length < 2) continue;
-    const style = resolveStrokeStyle(s);
-    applyStrokeStyle(ctx, style);
-    for (let i = 1; i < pts.length; i += 1) {
-      drawStrokeSegment(ctx, style, pts[i - 1]!, pts[i]!);
-    }
-  }
-}
-
-function redrawAll(
-  ctx: CanvasRenderingContext2D,
-  strokes: InkStroke[],
-  w: number,
-  h: number,
-) {
-  ctx.clearRect(0, 0, w, h);
-  drawAllStrokes(ctx, strokes);
-}
-
-function redrawPaperBackground(
-  ctx: CanvasRenderingContext2D,
-  template: "blank" | "ruled" | "grid",
-  w: number,
-  h: number,
-) {
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = PAPER_COLOR;
-  ctx.fillRect(0, 0, w, h);
-
-  if (template === "blank") return;
-
-  ctx.save();
-  ctx.lineWidth = 1;
-  ctx.strokeStyle = template === "grid" ? "rgba(148,120,72,0.22)" : "rgba(148,120,72,0.30)";
-  ctx.beginPath();
-
-  if (template === "grid") {
-    const step = 24;
-    for (let x = 0; x <= w; x += step) {
-      const xx = Math.round(x) + 0.5;
-      ctx.moveTo(xx, 0);
-      ctx.lineTo(xx, h);
-    }
-    for (let y = 0; y <= h; y += step) {
-      const yy = Math.round(y) + 0.5;
-      ctx.moveTo(0, yy);
-      ctx.lineTo(w, yy);
-    }
-  } else {
-    const step = 28;
-    for (let y = 0; y <= h; y += step) {
-      const yy = Math.round(y) + 0.5;
-      ctx.moveTo(0, yy);
-      ctx.lineTo(w, yy);
-    }
-  }
-
-  ctx.stroke();
-  ctx.restore();
 }
 
 export function createEmptyInkState(): InkState {
@@ -488,11 +383,17 @@ export function ScrollableInkPad({
     startScrollTop: number;
   } | null>(null);
   const canvasRectRef = useRef<CanvasRectLike | null>(null);
-  const activeStrokeStyleRef = useRef<ResolvedStrokeStyle | null>(null);
+  const activeStrokeRuntimeRef = useRef<InkStrokeRuntime | null>(null);
   const inkPerfRef = useRef<InkPerfMetrics>(createInkPerfMetrics());
 
   const [viewportSize, setViewportSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [inking, setInking] = useState(false);
+
+  const activeBrushPreset = useMemo(() => findInkBrushPreset(brushId), [brushId]);
+  const sampleDistancePx = useMemo(
+    () => computeSampleDistancePx(activeBrushPreset, penSize),
+    [activeBrushPreset, penSize],
+  );
 
   const [draft, setDraft] = useState<InkState>(value);
   const draftRef = useRef<InkState>(value);
@@ -636,12 +537,17 @@ export function ScrollableInkPad({
       dirtyRef.current = false;
       draftRef.current = committed;
       if (mountedRef.current) setDraft(committed);
+      redrawStrokeLayer(
+        committed.strokes,
+        Math.max(1, Math.round(commitWidth)),
+        Math.max(1, Math.round(committed.height)),
+      );
       onChange(committed, true);
       const perf = inkPerfRef.current;
       perf.commitTimeMs += nowMs() - commitStartedAt;
       logInkPerf(perf);
     };
-  }, [desiredContentWidth, onChange, value.height, viewportSize.h]);
+  }, [desiredContentWidth, onChange, redrawStrokeLayer, value.height, viewportSize.h]);
 
   // Flush draft when the app is backgrounded / view is torn down.
   useEffect(() => {
@@ -772,7 +678,7 @@ export function ScrollableInkPad({
   }, [desiredContentWidth, desiredContentHeight, redrawBackgroundLayer, redrawStrokeLayer]);
 
   const beginStroke = (p: InkPoint) => {
-    const brush = findInkBrushPreset(brushId);
+    const brush = activeBrushPreset;
     const strokeTool = brush?.tool ?? tool;
     const strokeSize = Math.max(0.5, penSize * (brush?.sizeScale ?? 1));
     const id = newId("stroke");
@@ -791,15 +697,17 @@ export function ScrollableInkPad({
     };
     activeStrokeIdRef.current = id;
     activeStrokeRef.current = stroke;
-    activeStrokeStyleRef.current = resolveStrokeStyle(stroke);
+    activeStrokeRuntimeRef.current = createInkStrokeRuntime(stroke, {
+      flatNibSweep: false,
+    });
     inkPerfRef.current = {
       ...createInkPerfMetrics(),
       strokeStartedAtMs: nowMs(),
       sampleCount: 1,
     };
     const strokeCtx = strokeCtxRef.current;
-    if (strokeCtx && activeStrokeStyleRef.current) {
-      applyStrokeStyle(strokeCtx, activeStrokeStyleRef.current);
+    if (strokeCtx && activeStrokeRuntimeRef.current) {
+      drawInkStrokePoint(strokeCtx, activeStrokeRuntimeRef.current, p);
     }
     const prev = draftRef.current;
     const next: InkState = {
@@ -824,18 +732,16 @@ export function ScrollableInkPad({
     stroke.points.push(p);
     dirtyRef.current = true;
 
-    const style = activeStrokeStyleRef.current ?? resolveStrokeStyle(stroke);
-    activeStrokeStyleRef.current = style;
-    if (strokeCtx && last) {
-      applyStrokeStyle(strokeCtx, style);
-      drawStrokeSegment(strokeCtx, style, last, p);
+    const runtime = activeStrokeRuntimeRef.current;
+    if (strokeCtx && last && runtime) {
+      drawInkStrokeSegmentRuntime(strokeCtx, runtime, last, p);
     }
   };
 
   const endStroke = () => {
     activeStrokeIdRef.current = null;
     activeStrokeRef.current = null;
-    activeStrokeStyleRef.current = null;
+    activeStrokeRuntimeRef.current = null;
     lastPointRef.current = null;
   };
 
@@ -939,7 +845,7 @@ export function ScrollableInkPad({
     const drawStartedAt = nowMs();
     for (const point of points) {
       const last = lastPointRef.current;
-      if (last && Math.hypot(point.x - last.x, point.y - last.y) < 0.5) {
+      if (last && Math.hypot(point.x - last.x, point.y - last.y) < sampleDistancePx) {
         continue;
       }
       appendPoint(point);
@@ -983,7 +889,10 @@ export function ScrollableInkPad({
   };
 
   const clear = () => {
-    if (disabled) return;
+    if (disabled || draft.strokes.length === 0) return;
+    if (typeof window !== "undefined" && !window.confirm("确定清空当前作答内容吗？")) {
+      return;
+    }
     const next: InkState = { width: desiredContentWidth, height: desiredContentHeight, strokes: [] };
     setDraft(next);
     draftRef.current = next;

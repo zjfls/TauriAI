@@ -2,17 +2,26 @@
 //!
 //! 目标：让前端可以把“真实图片”写入系统剪贴板，粘贴行为与系统截图一致。
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use base64::Engine as _;
+#[cfg(target_os = "android")]
+use jni::objects::{JObject, JValue};
 #[cfg(all(
     not(target_os = "macos"),
     not(any(target_os = "android", target_os = "ios"))
 ))]
 use std::borrow::Cow;
+#[cfg(target_os = "android")]
+use std::sync::mpsc;
 #[cfg(target_os = "windows")]
 use std::sync::Arc;
+#[cfg(target_os = "android")]
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(target_os = "android")]
+use tauri::Manager;
+#[cfg(not(target_os = "android"))]
+use tokio::fs;
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 const MAX_PNG_BYTES: usize = 30 * 1024 * 1024; // 30MB
 #[cfg(all(
     target_os = "macos",
@@ -20,7 +29,6 @@ const MAX_PNG_BYTES: usize = 30 * 1024 * 1024; // 30MB
 ))]
 const MAX_INLINE_DATA_URL_PNG_BYTES: usize = 2 * 1024 * 1024; // 2MB: avoid massive HTML/text payloads
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn strip_data_url_prefix(input: &str) -> &str {
     // Accept both raw base64 and data URL like: data:image/png;base64,....
     if let Some(rest) = input.strip_prefix("data:") {
@@ -29,6 +37,237 @@ fn strip_data_url_prefix(input: &str) -> &str {
         }
     }
     input
+}
+
+fn decode_png_base64(png_base64: &str) -> Result<(String, Vec<u8>), String> {
+    let trimmed = png_base64.trim();
+    if trimmed.is_empty() {
+        return Err("图片数据为空".to_string());
+    }
+
+    let base64_data = strip_data_url_prefix(trimmed).trim().to_string();
+    let png_bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| format!("解码 base64 失败: {e}"))?;
+
+    if png_bytes.is_empty() {
+        return Err("PNG 数据为空".to_string());
+    }
+    if png_bytes.len() > MAX_PNG_BYTES {
+        return Err(format!(
+            "PNG 过大（{} bytes），请复制小于 {}MB 的图片",
+            png_bytes.len(),
+            MAX_PNG_BYTES / 1024 / 1024
+        ));
+    }
+
+    Ok((base64_data, png_bytes))
+}
+
+fn sanitize_png_filename(suggested_name: Option<&str>) -> String {
+    let raw = suggested_name.unwrap_or("practice-question").trim();
+    let raw = raw
+        .strip_suffix(".png")
+        .or_else(|| raw.strip_suffix(".PNG"))
+        .unwrap_or(raw);
+
+    let mut sanitized = String::with_capacity(raw.len());
+    let mut prev_sep = false;
+    for ch in raw.chars() {
+        if ch.is_alphanumeric() {
+            sanitized.push(ch);
+            prev_sep = false;
+            continue;
+        }
+        if matches!(ch, '-' | '_' | ' ') && !prev_sep {
+            sanitized.push('_');
+            prev_sep = true;
+        }
+    }
+
+    let stem = sanitized.trim_matches('_');
+    let stem = if stem.is_empty() {
+        "practice-question"
+    } else {
+        stem
+    };
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{stem}-{ts}.png")
+}
+
+#[cfg(target_os = "android")]
+fn put_content_value_string(
+    env: &mut jni::JNIEnv,
+    values: &JObject,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
+    let key = env
+        .new_string(key)
+        .map_err(|e| format!("创建 Android ContentValues 键失败: {e}"))?;
+    let key = JObject::from(key);
+    let value = env
+        .new_string(value)
+        .map_err(|e| format!("创建 Android ContentValues 值失败: {e}"))?;
+    let value = JObject::from(value);
+    env.call_method(
+        values,
+        "put",
+        "(Ljava/lang/String;Ljava/lang/String;)V",
+        &[JValue::Object(&key), JValue::Object(&value)],
+    )
+    .map_err(|e| format!("写入 Android ContentValues 失败: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn save_png_bytes_to_android_gallery_inner(
+    env: &mut jni::JNIEnv,
+    activity: &JObject,
+    png_bytes: &[u8],
+    file_name: &str,
+) -> Result<(), String> {
+    let resolver = env
+        .call_method(
+            activity,
+            "getContentResolver",
+            "()Landroid/content/ContentResolver;",
+            &[],
+        )
+        .map_err(|e| format!("获取 Android ContentResolver 失败: {e}"))?
+        .l()
+        .map_err(|e| format!("读取 Android ContentResolver 失败: {e}"))?;
+
+    let values = env
+        .new_object("android/content/ContentValues", "()V", &[])
+        .map_err(|e| format!("创建 Android ContentValues 失败: {e}"))?;
+    put_content_value_string(env, &values, "_display_name", file_name)?;
+    put_content_value_string(env, &values, "mime_type", "image/png")?;
+    put_content_value_string(env, &values, "relative_path", "Pictures/TauriAI")?;
+
+    let collection = env
+        .get_static_field(
+            "android/provider/MediaStore$Images$Media",
+            "EXTERNAL_CONTENT_URI",
+            "Landroid/net/Uri;",
+        )
+        .map_err(|e| format!("获取 Android 相册 Uri 失败: {e}"))?
+        .l()
+        .map_err(|e| format!("读取 Android 相册 Uri 失败: {e}"))?;
+
+    let inserted_uri = env
+        .call_method(
+            &resolver,
+            "insert",
+            "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
+            &[JValue::Object(&collection), JValue::Object(&values)],
+        )
+        .map_err(|e| format!("创建相册条目失败: {e}"))?
+        .l()
+        .map_err(|e| format!("读取相册条目失败: {e}"))?;
+    if inserted_uri.is_null() {
+        return Err("创建相册条目失败：系统未返回图片 Uri".to_string());
+    }
+
+    let stream = env
+        .call_method(
+            &resolver,
+            "openOutputStream",
+            "(Landroid/net/Uri;)Ljava/io/OutputStream;",
+            &[JValue::Object(&inserted_uri)],
+        )
+        .map_err(|e| format!("打开相册输出流失败: {e}"))?
+        .l()
+        .map_err(|e| format!("读取相册输出流失败: {e}"))?;
+    if stream.is_null() {
+        return Err("打开相册输出流失败：系统返回了空对象".to_string());
+    }
+
+    let byte_array = env
+        .byte_array_from_slice(png_bytes)
+        .map_err(|e| format!("创建 Android PNG 字节数组失败: {e}"))?;
+    let byte_array = JObject::from(byte_array);
+    env.call_method(&stream, "write", "([B)V", &[JValue::Object(&byte_array)])
+        .map_err(|e| format!("写入相册图片失败: {e}"))?;
+    env.call_method(&stream, "flush", "()V", &[])
+        .map_err(|e| format!("刷新相册图片失败: {e}"))?;
+    env.call_method(&stream, "close", "()V", &[])
+        .map_err(|e| format!("关闭相册输出流失败: {e}"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "android")]
+fn save_png_bytes_to_android_gallery(
+    app: &tauri::AppHandle,
+    png_bytes: &[u8],
+    suggested_name: Option<&str>,
+) -> Result<String, String> {
+    let file_name = sanitize_png_filename(suggested_name);
+    let display_path = format!("Pictures/TauriAI/{file_name}");
+    let window = app
+        .get_webview_window("main")
+        .or_else(|| app.webview_windows().into_values().next())
+        .ok_or_else(|| "无法获取主窗口，不能保存题图到系统相册".to_string())?;
+
+    let png_bytes = png_bytes.to_vec();
+    let dispatch_file_name = file_name.clone();
+    let (tx, rx) = mpsc::channel();
+    window
+        .with_webview(move |webview| {
+            webview.jni_handle().exec(move |env, activity, _webview| {
+                let result = save_png_bytes_to_android_gallery_inner(
+                    env,
+                    activity,
+                    &png_bytes,
+                    &dispatch_file_name,
+                );
+                let _ = tx.send(result);
+            });
+        })
+        .map_err(|e| format!("调度 Android 相册写入失败: {e}"))?;
+
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Ok(())) => Ok(display_path),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err("写入系统相册超时，请稍后重试".to_string()),
+    }
+}
+
+#[tauri::command]
+pub async fn save_png_base64_to_local(
+    app: tauri::AppHandle,
+    png_base64: String,
+    suggested_name: Option<String>,
+) -> Result<String, String> {
+    let (_, png_bytes) = decode_png_base64(&png_base64)?;
+
+    #[cfg(target_os = "android")]
+    {
+        return save_png_bytes_to_android_gallery(&app, &png_bytes, suggested_name.as_deref());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("无法获取应用数据目录: {e}"))?
+            .join("practice")
+            .join("question-images");
+        fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| format!("创建题图目录失败: {e}"))?;
+
+        let file_path = dir.join(sanitize_png_filename(suggested_name.as_deref()));
+        fs::write(&file_path, png_bytes)
+            .await
+            .map_err(|e| format!("保存题图失败: {e}"))?;
+
+        Ok(file_path.to_string_lossy().to_string())
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -71,31 +310,11 @@ pub async fn clipboard_write_png_base64(
     app: tauri::AppHandle,
     png_base64: String,
 ) -> Result<(), String> {
-    let trimmed = png_base64.trim();
-    if trimmed.is_empty() {
-        return Err("图片数据为空".to_string());
-    }
-
     #[cfg(not(target_os = "windows"))]
     let _ = &app;
 
-    let base64_data = strip_data_url_prefix(trimmed).trim();
-
-    // Decode base64 -> PNG bytes.
-    let png_bytes = base64::engine::general_purpose::STANDARD
-        .decode(base64_data)
-        .map_err(|e| format!("解码 base64 失败: {e}"))?;
-
-    if png_bytes.is_empty() {
-        return Err("PNG 数据为空".to_string());
-    }
-    if png_bytes.len() > MAX_PNG_BYTES {
-        return Err(format!(
-            "PNG 过大（{} bytes），请复制小于 {}MB 的图片",
-            png_bytes.len(),
-            MAX_PNG_BYTES / 1024 / 1024
-        ));
-    }
+    let (base64_data, png_bytes) = decode_png_base64(&png_base64)?;
+    let base64_data = base64_data.as_str();
 
     // Extra compatibility on macOS: write multiple pasteboard representations (PNG/TIFF/HTML/text/file-url).
     //

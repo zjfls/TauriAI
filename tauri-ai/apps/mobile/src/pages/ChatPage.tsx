@@ -1128,29 +1128,36 @@ export function ChatPage({
     [conversation, messages, replaceConversationMessages, send, sending],
   );
 
+  const isCompactLayout = layout === "compact";
+  const showCompactModelPicker = isCompactLayout && modelOptions.length > 1;
+
   return (
     <div
       className="relative h-full flex flex-col overflow-x-hidden"
       onTouchStartCapture={handleTouchStartCapture}
       onTouchEndCapture={handleTouchEndCapture}
     >
-      {layout === "compact" ? (
-        <div className="safe-top border-b border-white/10 bg-white/5">
-          <div className="h-12 flex items-center justify-between px-3">
-            <div className="min-w-0">
-              <div className="text-sm font-medium truncate">{conversation?.title ?? "Chat"}</div>
-              <div className="text-[11px] text-white/60 truncate">
+      {isCompactLayout ? (
+        <div className="safe-top border-b border-white/10 bg-white/5 px-3 py-3 space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-base font-medium leading-6">
+                {conversation?.title ?? "Chat"}
+              </div>
+              <div className="mt-1 text-[11px] text-white/60 truncate">
                 {activeAgentLabel ? `Agent: ${activeAgentLabel}` : "Agent: 未选择"}
               </div>
-              <div className="text-[11px] text-white/45 truncate">
-                {`Model: ${activeModelLabel}`}
-              </div>
+              {!showCompactModelPicker ? (
+                <div className="text-[11px] text-white/45 truncate">
+                  {`Model: ${activeModelLabel}`}
+                </div>
+              ) : null}
             </div>
-            <div className="flex items-center gap-1">
+            <div className="flex shrink-0 items-center gap-2">
               <Button
                 size="sm"
                 variant="ghost"
-                className={clsx("gap-1 px-2", outlineOpen ? "bg-white/10" : "")}
+                className={clsx("h-10 gap-1 px-2", outlineOpen ? "bg-white/10" : "")}
                 onClick={() => setOutlineOpen((v) => !v)}
                 title={outlineOpen ? "隐藏消息目录" : "显示消息目录"}
               >
@@ -1158,12 +1165,41 @@ export function ChatPage({
                 <span className="text-[10px] leading-none">{outlineItems.length}</span>
               </Button>
               {onNewConversation ? (
-                <Button size="sm" variant="ghost" onClick={onNewConversation} title="新建对话">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-10 w-10 px-0"
+                  onClick={onNewConversation}
+                  title="新建对话"
+                >
                   <Plus size={16} />
                 </Button>
               ) : null}
             </div>
           </div>
+
+          {showCompactModelPicker ? (
+            <div className="space-y-1">
+              <div className="text-[11px] uppercase tracking-wide text-white/45">模型</div>
+              <Select
+                className="w-full text-sm"
+                value={selectedModelRef}
+                disabled={sending}
+                onChange={(event) => {
+                  if (!conversation) return;
+                  patchConversation(conversation.id, {
+                    modelRef: event.target.value || undefined,
+                  });
+                }}
+              >
+                {modelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -1192,7 +1228,7 @@ export function ChatPage({
         </div>
       ) : null}
 
-      {modelOptions.length > 0 ? (
+      {!isCompactLayout && modelOptions.length > 0 ? (
         <div className="border-b border-white/10 bg-white/5 px-3 py-2 space-y-1">
           <div className="flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -1451,156 +1487,303 @@ export function ChatPage({
         ) : null}
         {voiceError ? <div className="text-[11px] text-red-300">{voiceError}</div> : null}
 
-        <div className="flex items-end gap-2">
-          <button
-            type="button"
-            className="relative inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
-            onClick={openAttachmentPicker}
-            disabled={sending || attachmentBusy || isVoiceInputBusy}
-            title={supportsVision ? "添加图片、文本文件或 PDF" : "添加文本文件或 PDF"}
-          >
-            <Paperclip size={16} />
-            {draftAttachments.length > 0 ? (
-              <span className="absolute -right-1 -top-1 inline-flex min-w-[16px] items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] text-white">
-                {draftAttachments.length}
-              </span>
-            ) : null}
-          </button>
+        {isCompactLayout ? (
+          <>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="relative inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+                onClick={openAttachmentPicker}
+                disabled={sending || attachmentBusy || isVoiceInputBusy}
+                title={supportsVision ? "添加图片、文本文件或 PDF" : "添加文本文件或 PDF"}
+              >
+                <Paperclip size={16} />
+                {draftAttachments.length > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-w-[16px] items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] text-white">
+                    {draftAttachments.length}
+                  </span>
+                ) : null}
+              </button>
 
-          {supportsVision ? (
-            <button
-              type="button"
-              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
-              onClick={openCameraPicker}
-              disabled={sending || attachmentBusy || isVoiceInputBusy}
-              title="拍照"
-            >
-              <Camera size={16} />
-            </button>
-          ) : null}
+              {supportsVision ? (
+                <button
+                  type="button"
+                  className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+                  onClick={openCameraPicker}
+                  disabled={sending || attachmentBusy || isVoiceInputBusy}
+                  title="拍照"
+                >
+                  <Camera size={16} />
+                </button>
+              ) : null}
 
-          <button
-            type="button"
-            className={clsx(
-              "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50",
-              isVoiceInputBusy
-                ? "border-rose-300/40 bg-rose-500/20 text-rose-100"
-                : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
-            )}
-            onClick={() => void handleVoiceToggle()}
-            disabled={sending || attachmentBusy || voiceInputState === "requesting" || voiceInputState === "processing"}
-            title={isVoiceInputBusy ? "结束语音输入" : voiceInputSupported ? "语音输入" : "当前设备不支持语音输入"}
-          >
-            {voiceInputState === "processing" ? <LoaderCircle size={16} className="animate-spin" /> : <Mic size={16} />}
-          </button>
+              <button
+                type="button"
+                className={clsx(
+                  "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50",
+                  isVoiceInputBusy
+                    ? "border-rose-300/40 bg-rose-500/20 text-rose-100"
+                    : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
+                )}
+                onClick={() => void handleVoiceToggle()}
+                disabled={sending || attachmentBusy || voiceInputState === "requesting" || voiceInputState === "processing"}
+                title={isVoiceInputBusy ? "结束语音输入" : voiceInputSupported ? "语音输入" : "当前设备不支持语音输入"}
+              >
+                {voiceInputState === "processing" ? <LoaderCircle size={16} className="animate-spin" /> : <Mic size={16} />}
+              </button>
 
-          {supportsThinking ? (
-            showThinkingLevelSelector ? (
-              <div className="relative w-[76px] shrink-0">
-                <Brain size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/55" />
-                <Select
-                  className="h-10 w-full shrink-0 pl-7 pr-1 text-[13px]"
-                  aria-label="思考级别"
-                  title="思考级别"
-                  value={typeof effectiveThinkingMode === "string" ? effectiveThinkingMode ?? "" : ""}
+              {supportsThinking ? (
+                showThinkingLevelSelector ? (
+                  <div className="relative w-[72px] shrink-0">
+                    <Brain size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/55" />
+                    <Select
+                      className="h-10 w-full shrink-0 pl-7 pr-1 text-[13px]"
+                      aria-label="思考级别"
+                      title="思考级别"
+                      value={typeof effectiveThinkingMode === "string" ? effectiveThinkingMode ?? "" : ""}
+                      disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
+                      onChange={(e) => {
+                        if (!conversation) return;
+                        const value = e.target.value;
+                        patchConversation(conversation.id, {
+                          thinkingMode: (value === "" ? null : value) as ThinkingMode,
+                        });
+                      }}
+                    >
+                      <option value="">关</option>
+                      <option value="low">低</option>
+                      <option value="medium">中</option>
+                      <option value="high">高</option>
+                      {activeModelProfile?.providerType !== "google" ? <option value="xhigh">超</option> : null}
+                    </Select>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className={clsx(
+                      "h-10 w-10 shrink-0 px-0",
+                      effectiveThinkingMode ? "bg-violet-500/20 text-violet-100" : "text-white/70",
+                    )}
+                    disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
+                    onClick={() => {
+                      if (!conversation) return;
+                      patchConversation(conversation.id, {
+                        thinkingMode: Boolean(effectiveThinkingMode) ? false : true,
+                      });
+                    }}
+                    title={effectiveThinkingMode ? "关闭思考" : "开启思考"}
+                  >
+                    <Brain size={14} />
+                  </Button>
+                )
+              ) : null}
+
+              {supportsWebSearch ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={clsx(
+                    "h-10 w-10 shrink-0 px-0",
+                    effectiveWebSearchEnabled ? "bg-amber-500/20 text-amber-100" : "text-white/70",
+                  )}
                   disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
-                  onChange={(e) => {
+                  onClick={() => {
                     if (!conversation) return;
-                    const value = e.target.value;
                     patchConversation(conversation.id, {
-                      thinkingMode: (value === "" ? null : value) as ThinkingMode,
+                      webSearchEnabled: !effectiveWebSearchEnabled,
                     });
                   }}
+                  title={effectiveWebSearchEnabled ? "关闭搜索" : "开启搜索"}
                 >
-                  <option value="">关</option>
-                  <option value="low">低</option>
-                  <option value="medium">中</option>
-                  <option value="high">高</option>
-                  {activeModelProfile?.providerType !== "google" ? <option value="xhigh">超</option> : null}
-                </Select>
+                  <Search size={14} />
+                </Button>
+              ) : null}
+            </div>
+
+            <div className="flex items-end gap-2">
+              <div className="flex-1 min-w-0">
+                <Input
+                  ref={inputRef}
+                  value={input}
+                  onChange={(e) => {
+                    updateInput(e.target.value);
+                    if (voiceError) setVoiceError("");
+                  }}
+                  placeholder={voiceInputState === "listening" ? "正在听写…" : attachmentBusy ? "附件处理中…" : sending ? "发送中…" : "输入消息…"}
+                  disabled={sending || attachmentBusy || voiceInputState === "requesting"}
+                  readOnly={isVoiceInputBusy}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void send();
+                    }
+                  }}
+                />
               </div>
-            ) : (
+
+              <Button
+                className="h-10 min-w-[44px] shrink-0 px-0"
+                onClick={() => void send()}
+                disabled={sending || attachmentBusy || isVoiceInputBusy || (!input.trim() && draftAttachments.length === 0)}
+                title="发送"
+              >
+                <SendHorizontal size={18} />
+              </Button>
+            </div>
+          </>
+        ) : (
+          <div className="flex items-end gap-2">
+            <button
+              type="button"
+              className="relative inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+              onClick={openAttachmentPicker}
+              disabled={sending || attachmentBusy || isVoiceInputBusy}
+              title={supportsVision ? "添加图片、文本文件或 PDF" : "添加文本文件或 PDF"}
+            >
+              <Paperclip size={16} />
+              {draftAttachments.length > 0 ? (
+                <span className="absolute -right-1 -top-1 inline-flex min-w-[16px] items-center justify-center rounded-full bg-indigo-500 px-1 text-[10px] text-white">
+                  {draftAttachments.length}
+                </span>
+              ) : null}
+            </button>
+
+            {supportsVision ? (
+              <button
+                type="button"
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/10 bg-white/5 text-white/80 transition-colors hover:bg-white/10 disabled:opacity-50"
+                onClick={openCameraPicker}
+                disabled={sending || attachmentBusy || isVoiceInputBusy}
+                title="拍照"
+              >
+                <Camera size={16} />
+              </button>
+            ) : null}
+
+            <button
+              type="button"
+              className={clsx(
+                "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border transition-colors disabled:opacity-50",
+                isVoiceInputBusy
+                  ? "border-rose-300/40 bg-rose-500/20 text-rose-100"
+                  : "border-white/10 bg-white/5 text-white/80 hover:bg-white/10",
+              )}
+              onClick={() => void handleVoiceToggle()}
+              disabled={sending || attachmentBusy || voiceInputState === "requesting" || voiceInputState === "processing"}
+              title={isVoiceInputBusy ? "结束语音输入" : voiceInputSupported ? "语音输入" : "当前设备不支持语音输入"}
+            >
+              {voiceInputState === "processing" ? <LoaderCircle size={16} className="animate-spin" /> : <Mic size={16} />}
+            </button>
+
+            {supportsThinking ? (
+              showThinkingLevelSelector ? (
+                <div className="relative w-[76px] shrink-0">
+                  <Brain size={13} className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-white/55" />
+                  <Select
+                    className="h-10 w-full shrink-0 pl-7 pr-1 text-[13px]"
+                    aria-label="思考级别"
+                    title="思考级别"
+                    value={typeof effectiveThinkingMode === "string" ? effectiveThinkingMode ?? "" : ""}
+                    disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
+                    onChange={(e) => {
+                      if (!conversation) return;
+                      const value = e.target.value;
+                      patchConversation(conversation.id, {
+                        thinkingMode: (value === "" ? null : value) as ThinkingMode,
+                      });
+                    }}
+                  >
+                    <option value="">关</option>
+                    <option value="low">低</option>
+                    <option value="medium">中</option>
+                    <option value="high">高</option>
+                    {activeModelProfile?.providerType !== "google" ? <option value="xhigh">超</option> : null}
+                  </Select>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className={clsx(
+                    "h-10 w-10 shrink-0 px-0",
+                    effectiveThinkingMode ? "bg-violet-500/20 text-violet-100" : "text-white/70",
+                  )}
+                  disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
+                  onClick={() => {
+                    if (!conversation) return;
+                    patchConversation(conversation.id, {
+                      thinkingMode: Boolean(effectiveThinkingMode) ? false : true,
+                    });
+                  }}
+                  title={effectiveThinkingMode ? "关闭思考" : "开启思考"}
+                >
+                  <Brain size={14} />
+                </Button>
+              )
+            ) : null}
+
+            {supportsWebSearch ? (
               <Button
                 size="sm"
                 variant="ghost"
                 className={clsx(
                   "h-10 w-10 shrink-0 px-0",
-                  effectiveThinkingMode ? "bg-violet-500/20 text-violet-100" : "text-white/70",
+                  effectiveWebSearchEnabled ? "bg-amber-500/20 text-amber-100" : "text-white/70",
                 )}
                 disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
                 onClick={() => {
                   if (!conversation) return;
                   patchConversation(conversation.id, {
-                    thinkingMode: Boolean(effectiveThinkingMode) ? false : true,
+                    webSearchEnabled: !effectiveWebSearchEnabled,
                   });
                 }}
-                title={effectiveThinkingMode ? "关闭思考" : "开启思考"}
+                title={effectiveWebSearchEnabled ? "关闭搜索" : "开启搜索"}
               >
-                <Brain size={14} />
+                <Search size={14} />
               </Button>
-            )
-          ) : null}
+            ) : null}
 
-          {supportsWebSearch ? (
+            <div className="flex-1 min-w-0">
+              <Input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => {
+                  updateInput(e.target.value);
+                  if (voiceError) setVoiceError("");
+                }}
+                placeholder={voiceInputState === "listening" ? "正在听写…" : attachmentBusy ? "附件处理中…" : sending ? "发送中…" : "输入消息…"}
+                disabled={sending || attachmentBusy || voiceInputState === "requesting"}
+                readOnly={isVoiceInputBusy}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+              />
+            </div>
+
             <Button
-              size="sm"
               variant="ghost"
-              className={clsx(
-                "h-10 w-10 shrink-0 px-0",
-                effectiveWebSearchEnabled ? "bg-amber-500/20 text-amber-100" : "text-white/70",
-              )}
-              disabled={sending || attachmentBusy || isVoiceInputBusy || !conversation}
-              onClick={() => {
-                if (!conversation) return;
-                patchConversation(conversation.id, {
-                  webSearchEnabled: !effectiveWebSearchEnabled,
-                });
-              }}
-              title={effectiveWebSearchEnabled ? "关闭搜索" : "开启搜索"}
+              className="h-10 w-9 shrink-0 px-0 font-mono"
+              onClick={insertDollar}
+              disabled={sending || attachmentBusy || isVoiceInputBusy}
+              title="插入 $"
             >
-              <Search size={14} />
+              $
             </Button>
-          ) : null}
 
-          <div className="flex-1 min-w-0">
-            <Input
-              ref={inputRef}
-              value={input}
-              onChange={(e) => {
-                updateInput(e.target.value);
-                if (voiceError) setVoiceError("");
-              }}
-              placeholder={voiceInputState === "listening" ? "正在听写…" : attachmentBusy ? "附件处理中…" : sending ? "发送中…" : "输入消息…"}
-              disabled={sending || attachmentBusy || voiceInputState === "requesting"}
-              readOnly={isVoiceInputBusy}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send();
-                }
-              }}
-            />
+            <Button
+              className="h-10 w-10 shrink-0 px-0"
+              onClick={() => void send()}
+              disabled={sending || attachmentBusy || isVoiceInputBusy || (!input.trim() && draftAttachments.length === 0)}
+              title="发送"
+            >
+              <SendHorizontal size={18} />
+            </Button>
           </div>
-
-          <Button
-            variant="ghost"
-            className="h-10 w-9 shrink-0 px-0 font-mono"
-            onClick={insertDollar}
-            disabled={sending || attachmentBusy || isVoiceInputBusy}
-            title="插入 $"
-          >
-            $
-          </Button>
-
-          <Button
-            className="h-10 w-10 shrink-0 px-0"
-            onClick={() => void send()}
-            disabled={sending || attachmentBusy || isVoiceInputBusy || (!input.trim() && draftAttachments.length === 0)}
-            title="发送"
-          >
-            <SendHorizontal size={18} />
-          </Button>
-        </div>
+        )}
       </div>
     </div>
   );

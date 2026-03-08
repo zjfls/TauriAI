@@ -1230,6 +1230,7 @@ fn run_desktop() {
             practice_generate_title,
             // Clipboard
             clipboard_write_png_base64,
+            save_png_base64_to_local,
 	            // DevTools
 	            open_devtools_current_window,
 	            // Drag ghost
@@ -1500,6 +1501,7 @@ fn run_mobile() {
         practice_generate_title,
         probe_external_agents,
         save_app_config,
+        save_png_base64_to_local,
         set_agent_mcp_set,
         test_connection,
         test_mcp_server,
@@ -1524,6 +1526,7 @@ fn run_mobile() {
             practice_chat,
             practice_generate_title,
             clipboard_write_png_base64,
+            save_png_base64_to_local,
             mobile_chat_stream_start,
             mobile_chat_stream_cancel,
             // MCP commands
