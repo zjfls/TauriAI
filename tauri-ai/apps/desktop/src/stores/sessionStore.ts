@@ -446,7 +446,7 @@ export interface SessionState {
   hydrated: boolean;
 
   // Session operations
-  createSession: (agentName: string) => Promise<string>;
+  createSession: (agentName: string, opts?: { openInWorkspace?: boolean }) => Promise<string>;
   closeSession: (sessionId: string) => Promise<void>;
   /** 把一个会话（conversation）停靠/移入另一个窗口（作为 tab 或分屏），成功后关闭本窗口该 tab */
   dockSessionToWindow: (sessionId: string, targetWindowLabel: string, placement?: ChatDockPlacement) => Promise<void>;
@@ -517,7 +517,7 @@ export interface SessionState {
   // History
   openHistoricalConversation: (
     conversationId: string,
-    opts?: { agentName?: string; runMode?: RunMode }
+    opts?: { agentName?: string; runMode?: RunMode; openInWorkspace?: boolean }
   ) => Promise<string>;
   /** 克隆当前会话对应的对话，并在同一 Pane 新建一个 tab 打开 */
   cloneConversation: (sessionId: string) => Promise<string>;
@@ -679,8 +679,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Create a new session with the specified agent
    * Requirements: 1.3, 1.5, 3.3, 3.4
    */
-  createSession: async (agentName: string) => {
+  createSession: async (agentName: string, opts?: { openInWorkspace?: boolean }) => {
     const { sessions } = get();
+    const openInWorkspace = opts?.openInWorkspace !== false;
 
     if (sessions.size >= MAX_SESSIONS) {
       throw new Error(`已达到最大会话数限制 (${MAX_SESSIONS})`);
@@ -759,6 +760,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       unreadCompletionMessageId: null,
       createdAt: now,
       lastActiveAt: now,
+      detached: !openInWorkspace,
     };
 
     set((state) => {
@@ -766,15 +768,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       newSessions.set(sessionId, session);
       return {
         sessions: newSessions,
-        activeSessionId: sessionId,
+        activeSessionId: openInWorkspace ? sessionId : state.activeSessionId,
       };
     });
 
-    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
-    const layout = useWindowLayoutStore.getState();
-    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
-
-    get().saveSessionState();
+    if (openInWorkspace) {
+      useWorkspaceTabStore.getState().upsertChatTab(sessionId);
+      const layout = useWindowLayoutStore.getState();
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
+      get().saveSessionState();
+    }
 
     const { useConversationStore } = await import('./conversationStore');
     await useConversationStore.getState().loadConversations();
@@ -2405,7 +2408,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 		  saveSessionState: async () => {
 		    const { sessions, activeSessionId } = get();
 
-		    const persistedSessions: PersistedSession[] = Array.from(sessions.values()).map((session) => {
+		    const persistedSessions: PersistedSession[] = Array.from(sessions.values())
+      .filter((session) => !session.detached)
+      .map((session) => {
 		      const rawMentions = Array.isArray(session.draftWorkspaceMentions) ? session.draftWorkspaceMentions : [];
 		      const draftWorkspaceMentions: WorkspaceMentionChip[] | undefined =
 		        rawMentions.length > 0
@@ -2661,8 +2666,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   */
   openHistoricalConversation: async (
     conversationId: string,
-    opts?: { agentName?: string; runMode?: RunMode }
+    opts?: { agentName?: string; runMode?: RunMode; openInWorkspace?: boolean }
   ) => {
+    const openInWorkspace = opts?.openInWorkspace !== false;
     markChatOpenProfile('sessionStore:openHistoricalConversation:enter', { conversationId });
     requestConversationScrollToBottomOnce(conversationId);
     const { sessions } = get();
@@ -2678,9 +2684,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           conversationId,
           meta: { sessionId: session.id },
         });
+        if (!openInWorkspace) {
+          return session.id;
+        }
+        if (session.detached) {
+          set((state) => {
+            const newSessions = new Map(state.sessions);
+            const current = newSessions.get(session.id);
+            if (!current) return state;
+            newSessions.set(session.id, { ...current, detached: false });
+            return { sessions: newSessions };
+          });
+        }
+        useWorkspaceTabStore.getState().upsertChatTab(session.id);
         get().switchSession(session.id);
         const layout = useWindowLayoutStore.getState();
         layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(session.id));
+        get().saveSessionState();
         markChatOpenProfile('sessionStore:switchSession(done)', {
           conversationId,
           meta: { sessionId: session.id },
@@ -2791,27 +2811,28 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         .catch(() => {});
     }
 
-	    const session: AgentSession = {
-	      id: sessionId,
-	      agentName,
-	      title: conversation?.title || '新对话',
-	      modelRef,
-	      conversationId,
-	      workstudioId: resolvedWorkstudioId,
-	      apiType: apiProtocol,
-	      runMode,
-	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
-	      draftContent: '',
-	      messages,
-	      queuedMessages: [],
-	      streamingBlocks: null,
-	      isGenerating: false,
-	      error: null,
-	      hasUnreadCompletion: false,
-	      unreadCompletionMessageId: null,
-	      createdAt: now,
-	      lastActiveAt: now,
-	    };
+    const session: AgentSession = {
+      id: sessionId,
+      agentName,
+      title: conversation?.title || '新对话',
+      modelRef,
+      conversationId,
+      workstudioId: resolvedWorkstudioId,
+      apiType: apiProtocol,
+      runMode,
+      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
+      draftContent: '',
+      messages,
+      queuedMessages: [],
+      streamingBlocks: null,
+      isGenerating: false,
+      error: null,
+      hasUnreadCompletion: false,
+      unreadCompletionMessageId: null,
+      createdAt: now,
+      lastActiveAt: now,
+      detached: !openInWorkspace,
+    };
 
     markChatOpenProfile('sessionStore:setState(start)', { conversationId, meta: { sessionId } });
     set((state) => {
@@ -2819,20 +2840,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       newSessions.set(sessionId, session);
       return {
         sessions: newSessions,
-        activeSessionId: sessionId,
+        activeSessionId: openInWorkspace ? sessionId : state.activeSessionId,
       };
     });
     markChatOpenProfile('sessionStore:setState(done)', { conversationId, meta: { sessionId } });
 
-    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
-    markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
+    if (openInWorkspace) {
+      useWorkspaceTabStore.getState().upsertChatTab(sessionId);
+      markChatOpenProfile('sessionStore:upsertChatTab', { conversationId, meta: { sessionId } });
 
-    const layout = useWindowLayoutStore.getState();
-    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
+      const layout = useWindowLayoutStore.getState();
+      layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
 
-    // Save state
-    get().saveSessionState();
-    markChatOpenProfile('sessionStore:saveSessionState', { conversationId, meta: { sessionId } });
+      // Save state
+      get().saveSessionState();
+      markChatOpenProfile('sessionStore:saveSessionState', { conversationId, meta: { sessionId } });
+    }
 
     return sessionId;
   },

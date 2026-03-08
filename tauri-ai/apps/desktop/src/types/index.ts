@@ -1944,6 +1944,7 @@ export interface AgentSession {
   // Metadata
   createdAt: string;                  // ISO timestamp of session creation
   lastActiveAt: string;               // ISO timestamp of last activity
+  detached?: boolean;                 // UI-only: hidden session used by embedded surfaces (not restored as workspace tab)
 }
 
 /**

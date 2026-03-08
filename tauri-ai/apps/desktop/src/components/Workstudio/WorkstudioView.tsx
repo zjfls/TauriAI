@@ -41,10 +41,12 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  AgentSession,
   CodeSnippetContentPart,
   Conversation,
   DebugInfo,
   LspServerStatus,
+  Message,
   MessageBlock,
   MessageTurn,
   RunEventPayload,
@@ -96,6 +98,7 @@ import { focusMainWindow, getViewWindowParams } from '../../utils/viewWindow';
 import { MarkdownRenderer } from '../Chat/MarkdownRenderer';
 import { MessageBlocks } from '../Chat/MessageBlocks';
 import { DebugModal } from '../Chat/DebugModal';
+import ChatView from '../Chat/ChatView';
 import { getApiProtocol, getProviderType } from '../../utils/apiUtils';
 import { setupMonaco } from '../../utils/monaco';
 import { attachMonacoLspBridge } from '../../utils/monacoLspBridge';
@@ -113,7 +116,7 @@ import {
   rankSymbolSearchItems,
 } from './symbolSearch';
 import { useWorkstudioFsSync } from './useWorkstudioFsSync';
-import { buildChatWithSnippet, formatChatWithTitle } from '../../utils/chatWith';
+import { buildChatWithDefaultDraft, buildChatWithSnippet, formatChatWithTitle } from '../../utils/chatWith';
 
 type DirEntry = {
   name: string;
@@ -162,17 +165,6 @@ type InlineChatSelection = {
   text: string;
   range: OutlineRange;
   label: string;
-};
-
-const isSameInlineChatSelection = (a: InlineChatSelection | null, b: InlineChatSelection | null): boolean => {
-  if (!a || !b) return false;
-  return (
-    normalizeFsPath(a.filePath) === normalizeFsPath(b.filePath)
-    && a.range.startLine === b.range.startLine
-    && a.range.startColumn === b.range.startColumn
-    && a.range.endLine === b.range.endLine
-    && a.range.endColumn === b.range.endColumn
-  );
 };
 
 type WorkstudioAiBubbleKind = 'symbol_analysis' | 'folder_analysis';
@@ -248,6 +240,62 @@ type WorkstudioAiBubble = {
   latencyMs?: number;
   startedAtMs?: number;
   createdAt: string;
+};
+
+
+type WorkstudioChatWithBubble = {
+  id: string;
+  threadId: string;
+  sessionId: string | null;
+  conversationId: string;
+  title: string;
+  label: string;
+  filePath: string;
+  languageId: string;
+  range?: OutlineRange;
+  selectionTextSnapshot?: string;
+  createdAt: string;
+};
+
+type WorkstudioChatWithModalState = {
+  open: boolean;
+  bubbleId: string | null;
+  showCodePanel: boolean;
+  loading: boolean;
+  pendingSelection: InlineChatSelection | null;
+};
+
+const formatOutlineRangeLabel = (range?: OutlineRange | null): string => {
+  if (!range) return '';
+  return range.startLine === range.endLine ? `L${range.startLine}` : `L${range.startLine}-${range.endLine}`;
+};
+
+const buildChatWithDisplayTitle = (filePath: string, range?: OutlineRange | null): string => {
+  const base = basename(normalizeFsPath(filePath) || filePath || 'Chat with');
+  const rangeLabel = formatOutlineRangeLabel(range);
+  return rangeLabel ? `${base} · ${rangeLabel}` : base;
+};
+
+const summarizeChatWithText = (value: string, fallback = '暂无消息'): string => {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (!compact) return fallback;
+  return compact.length > 72 ? `${compact.slice(0, 72)}…` : compact;
+};
+
+const extractMessagePreview = (message?: Message | null): string => {
+  if (!message) return '暂无消息';
+  const direct = String(message.content ?? '').trim();
+  if (direct) return summarizeChatWithText(direct);
+  const parts = Array.isArray(message.contentParts) ? message.contentParts : [];
+  if (parts.length === 0) return '暂无消息';
+  const labels = parts.map((part) => {
+    if (part.type === 'code_snippet') return `代码片段 ${part.label || ''}`.trim();
+    if (part.type === 'image') return '图片';
+    if (part.type === 'pdf_document') return `PDF ${part.filename || ''}`.trim();
+    if (part.type === 'text_file') return `文本 ${part.filename || ''}`.trim();
+    return '附件';
+  });
+  return summarizeChatWithText(labels.join(' · '), '仅附件');
 };
 
 const extractLatestTurnMarkdownFromBlocks = (blocks?: MessageBlock[] | null, turns?: MessageTurn[] | null): string => {
@@ -1561,33 +1609,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   const outlineSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const terminalSurfaceRef = useRef<TerminalSurfaceHandle | null>(null);
-  const [inlineChatComposer, setInlineChatComposer] = useState<{
-    open: boolean;
-    selection: InlineChatSelection | null;
-    question: string;
-    submitting: boolean;
-  }>({ open: false, selection: null, question: '', submitting: false });
-  const openInlineChatComposer = useCallback((selection: InlineChatSelection) => {
-    setInlineChatComposer((prev) => {
-      const sameSelection = isSameInlineChatSelection(prev.selection, selection);
-      if (sameSelection) {
-        return {
-          ...prev,
-          open: true,
-          selection,
-        };
-      }
-      return {
-        open: true,
-        selection,
-        question: '',
-        submitting: false,
-      };
-    });
-  }, []);
-  const closeInlineChatComposer = useCallback(() => {
-    setInlineChatComposer((prev) => ({ ...prev, open: false, submitting: false }));
-  }, []);
+  const [chatWithBubbles, setChatWithBubbles] = useState<WorkstudioChatWithBubble[]>([]);
+  const [chatWithModal, setChatWithModal] = useState<WorkstudioChatWithModalState>({
+    open: false,
+    bubbleId: null,
+    showCodePanel: true,
+    loading: false,
+    pendingSelection: null,
+  });
 
   const [chatWithHistoryViewer, setChatWithHistoryViewer] = useState<{
     open: boolean;
@@ -1607,6 +1636,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     loading: boolean;
     error: string | null;
   } | null>(null);
+  const chatWithBubblesRef = useRef<WorkstudioChatWithBubble[]>([]);
+  const chatWithModalRequestSeqRef = useRef(0);
   const [aiBubbles, setAiBubbles] = useState<WorkstudioAiBubble[]>([]);
   const aiBubblesRef = useRef<WorkstudioAiBubble[]>([]);
   const activeSymbolAnalysisKeysRef = useRef<Set<string>>(new Set());
@@ -1635,6 +1666,21 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   useEffect(() => {
     chatWithHistoryViewerRef.current = chatWithHistoryViewer;
   }, [chatWithHistoryViewer]);
+
+  useEffect(() => {
+    chatWithBubblesRef.current = chatWithBubbles;
+  }, [chatWithBubbles]);
+
+  useEffect(() => {
+    if (!chatWithModal.open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      chatWithModalRequestSeqRef.current += 1;
+      setChatWithModal((prev) => ({ ...prev, open: false, bubbleId: null, loading: false, pendingSelection: null }));
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [chatWithModal.open]);
 
 	  useEffect(() => {
 	    aiBubblesRef.current = aiBubbles;
@@ -1699,10 +1745,14 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
   }, [aiViewerId]);
 
   const chatWithAgentRef = useConfigStore((s) => s.config?.codeIntelligence?.aiCompletion?.chatWithAgentRef);
+  const sessions = useSessionStore((state) => state.sessions);
   const createSession = useSessionStore((state) => state.createSession);
   const openHistoricalConversation = useSessionStore((state) => state.openHistoricalConversation);
-  const sendMessage = useSessionStore((state) => state.sendMessage);
+  const closeSession = useSessionStore((state) => state.closeSession);
   const setSessionTitle = useSessionStore((state) => state.setSessionTitle);
+  const setSessionDraftContent = useSessionStore((state) => state.setSessionDraftContent);
+  const setSessionDraftCodeSnippets = useSessionStore((state) => state.setSessionDraftCodeSnippets);
+  const ensureChatWithThreadForConversation = useWorkstudioChatWithStore((state) => state.ensureThreadForConversation);
   const findChatWithThread = useWorkstudioChatWithStore((state) => state.findThread);
   const saveChatWithThread = useWorkstudioChatWithStore((state) => state.saveThread);
   const listChatWithThreadsForFile = useWorkstudioChatWithStore((state) => state.listThreadsForFile);
@@ -1827,110 +1877,435 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
     };
   }, []);
 
-  const submitInlineChat = useCallback(async () => {
-    const selection = inlineChatComposer.selection;
-    const question = inlineChatComposer.question.trim();
-    if (!selection || !question || inlineChatComposer.submitting) return;
-    if (!workstudioId) {
-      showNavToast('当前 Workstudio 未初始化，无法发起 Chat with');
-      return;
-    }
+  const closeChatWithModal = useCallback(() => {
+    chatWithModalRequestSeqRef.current += 1;
+    setChatWithModal((prev) => ({
+      ...prev,
+      open: false,
+      bubbleId: null,
+      loading: false,
+      pendingSelection: null,
+    }));
+  }, []);
 
-    const agentName = chatWithAgentRef || '__system_chat_with';
-    const anchor = {
-      filePath: selection.filePath,
-      languageId: selection.languageId,
-      label: selection.label,
-      range: selection.range,
-    };
+  const upsertChatWithBubble = useCallback(
+    (thread: WorkstudioChatWithThread, sessionId: string | null, selectionTextSnapshot?: string) => {
+      const currentBubbles = chatWithBubblesRef.current;
+      const existing =
+        currentBubbles.find((bubble) => bubble.threadId === thread.id || bubble.conversationId === thread.conversationId) ?? null;
+      const nextBubble: WorkstudioChatWithBubble = {
+        id: existing?.id ?? crypto.randomUUID(),
+        threadId: thread.id,
+        sessionId,
+        conversationId: thread.conversationId,
+        title: buildChatWithDisplayTitle(thread.filePath, thread.range),
+        label: thread.label,
+        filePath: thread.filePath,
+        languageId: thread.languageId,
+        range: thread.range,
+        selectionTextSnapshot: selectionTextSnapshot ?? thread.selectionTextSnapshot ?? existing?.selectionTextSnapshot,
+        createdAt: existing?.createdAt ?? thread.createdAt,
+      };
+      const nextBubbles = existing
+        ? currentBubbles.map((bubble) => (bubble.id === existing.id ? nextBubble : bubble))
+        : [...currentBubbles, nextBubble];
+      chatWithBubblesRef.current = nextBubbles;
+      setChatWithBubbles(nextBubbles);
+      return nextBubble.id;
+    },
+    []
+  );
 
-    setInlineChatComposer((prev) => ({ ...prev, submitting: true }));
-    try {
-      let thread = await findChatWithThread({
-        workstudioId,
-        agentName,
-        filePath: anchor.filePath,
-        languageId: anchor.languageId,
-        label: anchor.label,
-        range: anchor.range,
+  const bindChatWithSessionToWorkstudio = useCallback(
+    async (sessionId: string | null, targetWorkstudioId: string | null) => {
+      const normalizedSessionId = String(sessionId ?? '').trim();
+      const normalizedWorkstudioId = String(targetWorkstudioId ?? '').trim();
+      if (!normalizedSessionId || !normalizedWorkstudioId) return;
+      const currentSession = useSessionStore.getState().getSession(normalizedSessionId) ?? null;
+      if (!currentSession) return;
+      if ((currentSession.workstudioId ?? null) !== normalizedWorkstudioId) {
+        useSessionStore.setState((state) => {
+          const nextSessions = new Map(state.sessions);
+          const existing = nextSessions.get(normalizedSessionId);
+          if (!existing) return state;
+          nextSessions.set(normalizedSessionId, {
+            ...existing,
+            workstudioId: normalizedWorkstudioId,
+          });
+          return { sessions: nextSessions };
+        });
+      }
+      const conversationId = String(currentSession.conversationId ?? '').trim();
+      if (!conversationId) return;
+      await invoke('update_conversation_metadata', {
+        conversationId,
+        workstudioId: normalizedWorkstudioId,
+      }).catch(console.error);
+      void import('../../stores/conversationStore')
+        .then(({ useConversationStore }) => {
+          useConversationStore.getState().patchConversation(conversationId, {
+            workstudioId: normalizedWorkstudioId,
+          });
+        })
+        .catch(() => {});
+    },
+    []
+  );
+
+  const seedChatWithDraft = useCallback(
+    (
+      sessionId: string,
+      session: AgentSession | null,
+      anchor: Parameters<typeof buildChatWithSnippet>[0],
+      selectionText: string
+    ) => {
+      const codeText = String(selectionText ?? '').trim();
+      if (!session || session.messages.length !== 0 || !codeText) return;
+
+      const currentSnippets = Array.isArray(session.draftCodeSnippets)
+        ? session.draftCodeSnippets.filter((snippet) => snippet?.type === 'code_snippet')
+        : [];
+      const snippet = currentSnippets[0] ?? buildChatWithSnippet(anchor, codeText);
+
+      if (currentSnippets.length === 0) {
+        setSessionDraftCodeSnippets(sessionId, [snippet]);
+      }
+
+      if (!String(session.draftContent ?? '').trim()) {
+        setSessionDraftContent(sessionId, buildChatWithDefaultDraft(anchor, snippet.id));
+      }
+    },
+    [setSessionDraftCodeSnippets, setSessionDraftContent]
+  );
+
+  const ensureChatWithSession = useCallback(
+    async (thread: WorkstudioChatWithThread, selectionTextSnapshot?: string) => {
+      let session = useSessionStore.getState().getSessionByConversationId(thread.conversationId) ?? null;
+      let sessionId = session?.id ?? null;
+      if (!sessionId) {
+        sessionId = await openHistoricalConversation(thread.conversationId, {
+          agentName: thread.agentName,
+          openInWorkspace: false,
+        });
+        session = useSessionStore.getState().getSession(sessionId) ?? null;
+      }
+      if (sessionId && thread.workstudioId) {
+        await bindChatWithSessionToWorkstudio(sessionId, thread.workstudioId);
+        session = useSessionStore.getState().getSession(sessionId) ?? session;
+      }
+      const codeText = String(selectionTextSnapshot ?? thread.selectionTextSnapshot ?? '').trim();
+      if (sessionId && session && codeText) {
+        seedChatWithDraft(
+          sessionId,
+          session,
+          {
+            filePath: thread.filePath,
+            languageId: thread.languageId,
+            label: thread.label,
+            range: thread.range,
+          },
+          codeText
+        );
+      }
+      return sessionId;
+    },
+    [bindChatWithSessionToWorkstudio, openHistoricalConversation, seedChatWithDraft]
+  );
+
+  const openChatWithThreadModal = useCallback(
+    async (thread: WorkstudioChatWithThread, options?: { selectionTextSnapshot?: string; showCodePanel?: boolean }) => {
+      const requestSeq = chatWithModalRequestSeqRef.current + 1;
+      chatWithModalRequestSeqRef.current = requestSeq;
+      const bubbleId = upsertChatWithBubble(thread, null, options?.selectionTextSnapshot);
+      setChatWithModal({
+        open: true,
+        bubbleId,
+        showCodePanel: options?.showCodePanel ?? true,
+        loading: true,
+        pendingSelection: null,
+      });
+      const sessionId = await ensureChatWithSession(thread, options?.selectionTextSnapshot);
+      if (chatWithModalRequestSeqRef.current !== requestSeq) return null;
+      const normalizedBubbleId = upsertChatWithBubble(thread, sessionId, options?.selectionTextSnapshot);
+      setChatWithModal({
+        open: true,
+        bubbleId: normalizedBubbleId,
+        showCodePanel: options?.showCodePanel ?? true,
+        loading: false,
+        pendingSelection: null,
+      });
+      return normalizedBubbleId;
+    },
+    [ensureChatWithSession, upsertChatWithBubble]
+  );
+
+  const openInlineChatComposer = useCallback(
+    async (selection: InlineChatSelection) => {
+      if (!workstudioId) {
+        showNavToast('当前 Workstudio 未初始化，无法发起 Chat with');
+        return;
+      }
+
+      const requestSeq = chatWithModalRequestSeqRef.current + 1;
+      chatWithModalRequestSeqRef.current = requestSeq;
+      const agentName = chatWithAgentRef || '__system_chat_with';
+      const anchor = {
+        filePath: selection.filePath,
+        languageId: selection.languageId,
+        label: selection.label,
+        range: selection.range,
+      };
+
+      setChatWithModal({
+        open: true,
+        bubbleId: null,
+        showCodePanel: true,
+        loading: true,
+        pendingSelection: selection,
       });
 
-      let sessionId: string;
-      if (thread?.conversationId) {
-        sessionId = await openHistoricalConversation(thread.conversationId, { agentName });
-      } else {
-        sessionId = await createSession(agentName);
-        const session = useSessionStore.getState().getSession(sessionId);
-        const conversationId = String(session?.conversationId ?? '').trim();
-        if (!conversationId) {
-          throw new Error('新建会话失败：缺少 conversationId');
-        }
-
-        const title = formatChatWithTitle(anchor);
-        setSessionTitle(sessionId, title);
-        await invoke('update_conversation_metadata', {
-          conversationId,
+      try {
+        let thread = await findChatWithThread({
           workstudioId,
-        }).catch(console.error);
-        await invoke('update_conversation_title', {
-          conversationId,
-          title,
-        }).catch(console.error);
-        void import('../../stores/conversationStore')
-          .then(({ useConversationStore }) => {
-            useConversationStore.getState().patchConversation(conversationId, {
-              title,
-              workstudioId,
-            });
-          })
-          .catch(() => {});
-
-        const now = new Date().toISOString();
-        thread = await saveChatWithThread({
-          id: crypto.randomUUID(),
-          workstudioId,
-          conversationId,
           agentName,
-          modelRef: session?.modelRef,
-          title,
           filePath: anchor.filePath,
           languageId: anchor.languageId,
           label: anchor.label,
           range: anchor.range,
-          selectionTextSnapshot: selection.text,
-          createdAt: now,
-          updatedAt: now,
         });
+
+        let sessionId: string | null = null;
+        if (thread?.conversationId) {
+          sessionId = await ensureChatWithSession(thread, selection.text);
+        } else {
+          sessionId = await createSession(agentName, { openInWorkspace: false });
+          const session = useSessionStore.getState().getSession(sessionId);
+          const conversationId = String(session?.conversationId ?? '').trim();
+          if (!conversationId) {
+            throw new Error('新建会话失败：缺少 conversationId');
+          }
+
+          const title = formatChatWithTitle(anchor);
+          setSessionTitle(sessionId, title);
+          await invoke('update_conversation_metadata', {
+            conversationId,
+            workstudioId,
+          }).catch(console.error);
+          await invoke('update_conversation_title', {
+            conversationId,
+            title,
+          }).catch(console.error);
+          await bindChatWithSessionToWorkstudio(sessionId, workstudioId);
+          void import('../../stores/conversationStore')
+            .then(({ useConversationStore }) => {
+              useConversationStore.getState().patchConversation(conversationId, {
+                title,
+                workstudioId,
+              });
+            })
+            .catch(() => {});
+
+          const now = new Date().toISOString();
+          thread = await saveChatWithThread({
+            id: crypto.randomUUID(),
+            workstudioId,
+            conversationId,
+            agentName,
+            modelRef: session?.modelRef,
+            title,
+            filePath: anchor.filePath,
+            languageId: anchor.languageId,
+            label: anchor.label,
+            range: anchor.range,
+            selectionTextSnapshot: selection.text,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+
+        if (!thread) {
+          throw new Error('启动 Chat with 会话失败');
+        }
+
+        const session = sessionId ? useSessionStore.getState().getSession(sessionId) ?? null : null;
+        if (sessionId && session && selection.text.trim()) {
+          seedChatWithDraft(sessionId, session, anchor, selection.text);
+        }
+
+        if (chatWithModalRequestSeqRef.current !== requestSeq) return;
+        const bubbleId = upsertChatWithBubble(thread, sessionId, selection.text);
+        setChatWithModal({
+          open: true,
+          bubbleId,
+          showCodePanel: true,
+          loading: false,
+          pendingSelection: null,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (chatWithModalRequestSeqRef.current !== requestSeq) return;
+        setChatWithModal((prev) => ({
+          ...prev,
+          open: false,
+          bubbleId: null,
+          loading: false,
+          pendingSelection: null,
+        }));
+        showNavToast(message || '启动 Chat with 会话失败');
+      }
+    },
+    [
+      bindChatWithSessionToWorkstudio,
+      chatWithAgentRef,
+      createSession,
+      ensureChatWithSession,
+      findChatWithThread,
+      saveChatWithThread,
+      seedChatWithDraft,
+      setSessionTitle,
+      showNavToast,
+      upsertChatWithBubble,
+      workstudioId,
+    ]
+  );
+
+
+
+  const openChatWithBubble = useCallback(
+    async (bubbleId: string) => {
+      const requestSeq = chatWithModalRequestSeqRef.current + 1;
+      chatWithModalRequestSeqRef.current = requestSeq;
+      const bubble = chatWithBubblesRef.current.find((item) => item.id === bubbleId) ?? null;
+      if (!bubble) return;
+      const existingSession = bubble.sessionId ? useSessionStore.getState().getSession(bubble.sessionId) ?? null : null;
+      if (existingSession) {
+        if (bubble.selectionTextSnapshot) {
+          seedChatWithDraft(
+            existingSession.id,
+            existingSession,
+            {
+              filePath: bubble.filePath,
+              languageId: bubble.languageId,
+              label: bubble.label,
+              range: bubble.range,
+            },
+            bubble.selectionTextSnapshot
+          );
+        }
+        if (chatWithModalRequestSeqRef.current !== requestSeq) return;
+        setChatWithModal((prev) => ({
+          ...prev,
+          open: true,
+          bubbleId,
+          loading: false,
+          pendingSelection: null,
+        }));
+        return;
       }
 
-      await sendMessage(sessionId, question, undefined, [buildChatWithSnippet(anchor, selection.text)]);
-      setInlineChatComposer({
-        open: false,
-        selection,
-        question: '',
-        submitting: false,
-      });
-      showNavToast(thread ? '已在 Chat 中打开 Chat with 线程' : '已在 Chat 中打开 Chat with 会话');
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setInlineChatComposer((prev) => ({ ...prev, submitting: false }));
-      showNavToast(message || '启动 Chat with 会话失败');
-    }
-  }, [
-    chatWithAgentRef,
-    createSession,
-    findChatWithThread,
-    inlineChatComposer.question,
-    inlineChatComposer.selection,
-    inlineChatComposer.submitting,
-    openHistoricalConversation,
-    saveChatWithThread,
-    sendMessage,
-    setSessionTitle,
-    showNavToast,
-    workstudioId,
-  ]);
+      setChatWithModal((prev) => ({
+        ...prev,
+        open: true,
+        bubbleId,
+        loading: true,
+        pendingSelection: null,
+      }));
+      try {
+        const thread = await ensureChatWithThreadForConversation(bubble.conversationId);
+        if (!thread) {
+          throw new Error('未找到 Chat with 线程');
+        }
+        const sessionId = await ensureChatWithSession(thread, bubble.selectionTextSnapshot);
+        if (chatWithModalRequestSeqRef.current !== requestSeq) return;
+        const normalizedBubbleId = upsertChatWithBubble(thread, sessionId, bubble.selectionTextSnapshot);
+        setChatWithModal((prev) => ({
+          ...prev,
+          open: true,
+          bubbleId: normalizedBubbleId,
+          loading: false,
+          pendingSelection: null,
+        }));
+      } catch (err) {
+        if (chatWithModalRequestSeqRef.current !== requestSeq) return;
+        const message = err instanceof Error ? err.message : String(err);
+        closeChatWithModal();
+        showNavToast(message || '打开 Chat with 会话失败');
+      }
+    },
+    [
+      closeChatWithModal,
+      ensureChatWithSession,
+      ensureChatWithThreadForConversation,
+      seedChatWithDraft,
+      showNavToast,
+      upsertChatWithBubble,
+    ]
+  );
 
+  const dismissChatWithBubble = useCallback(
+    async (bubbleId: string) => {
+      const bubble = chatWithBubblesRef.current.find((item) => item.id === bubbleId) ?? null;
+      if (!bubble) return;
+
+      const nextBubbles = chatWithBubblesRef.current.filter((item) => item.id !== bubbleId);
+      chatWithBubblesRef.current = nextBubbles;
+      setChatWithBubbles(nextBubbles);
+
+      if (chatWithModal.bubbleId === bubbleId) {
+        closeChatWithModal();
+      }
+
+      if (!bubble.sessionId) return;
+      const session = useSessionStore.getState().getSession(bubble.sessionId) ?? null;
+      if (!session?.detached) return;
+      await closeSession(bubble.sessionId).catch(() => {});
+    },
+    [chatWithModal.bubbleId, closeChatWithModal, closeSession]
+  );
+
+  const chatWithBubbleViews = useMemo(() => {
+    return chatWithBubbles.map((bubble) => {
+      const session = bubble.sessionId ? sessions.get(bubble.sessionId) ?? null : null;
+      const assistantMessage = session
+        ? [...session.messages].reverse().find((message) => message.role === 'assistant') ?? null
+        : null;
+      const latestUserMessage = session
+        ? [...session.messages].reverse().find((message) => message.role === 'user') ?? null
+        : null;
+      const streamingPreview = session?.isGenerating
+        ? summarizeChatWithText(
+            extractLatestTurnMarkdownFromBlocks(
+              session.streamingBlocks ?? null,
+              session.streamingTurns ? Array.from(session.streamingTurns.values()) : null
+            ),
+            '生成中…'
+          )
+        : null;
+      const preview =
+        streamingPreview ??
+        (session?.error
+          ? summarizeChatWithText(session.error, '生成失败')
+          : session && session.messages.length === 0
+            ? '等待提问…'
+            : extractMessagePreview(assistantMessage ?? latestUserMessage ?? null));
+      const status: 'error' | 'streaming' | 'done' = session?.error
+        ? 'error'
+        : session?.isGenerating
+          ? 'streaming'
+          : 'done';
+      return {
+        ...bubble,
+        session,
+        status,
+        preview,
+      };
+    });
+  }, [chatWithBubbles, sessions]);
+
+  const activeChatWithBubble = useMemo(() => {
+    if (!chatWithModal.bubbleId) return null;
+    return chatWithBubbleViews.find((bubble) => bubble.id === chatWithModal.bubbleId) ?? null;
+  }, [chatWithBubbleViews, chatWithModal.bubbleId]);
 
   useEffect(() => {
     // 切换 Workstudio 时清空浏览历史，避免跨项目串联。
@@ -7753,6 +8128,18 @@ type OpenFromLinkErrorInfo = {
       try {
         await removeChatWithThread(id, workstudioId);
 
+        const bubbleForThread = chatWithBubblesRef.current.find((bubble) => bubble.threadId === id) ?? null;
+        if (bubbleForThread?.sessionId) {
+          const session = useSessionStore.getState().getSession(bubbleForThread.sessionId) ?? null;
+          if (session?.detached) {
+            await closeSession(bubbleForThread.sessionId).catch(() => {});
+          }
+        }
+        setChatWithBubbles((prev) => prev.filter((bubble) => bubble.threadId !== id));
+        if (chatWithModal.bubbleId && bubbleForThread?.id === chatWithModal.bubbleId) {
+          closeChatWithModal();
+        }
+
         setChatWithHistoryViewer((prev) => {
           if (!prev) return prev;
           const nextRecords = prev.records.filter((r) => r.id !== id);
@@ -7778,7 +8165,7 @@ type OpenFromLinkErrorInfo = {
         showNavToast(message || '删除 Chat with 线程失败');
       }
     },
-    [makeChatWithFileCacheKey, removeChatWithThread, showNavToast, workstudioId]
+    [chatWithModal.bubbleId, closeChatWithModal, closeSession, makeChatWithFileCacheKey, removeChatWithThread, showNavToast, workstudioId]
   );
 
   const viewOutlineSymbolAnalysis = useCallback(
@@ -9435,8 +9822,8 @@ type OpenFromLinkErrorInfo = {
           run: async () => {
             const snap = snapshotSelection();
             if (!snap) return;
-            // Placeholder: the full bubble UI is implemented below; here we only open the composer.
-            openInlineChatComposer({
+            // Open or reuse a Workstudio Chat-with bubble, then show the embedded chat modal.
+            void openInlineChatComposer({
               filePath: snap.filePath,
               languageId: snap.languageId,
               text: snap.text,
@@ -12271,8 +12658,52 @@ type OpenFromLinkErrorInfo = {
           </div>
         </div>
       )}
-      {aiBubbles.length > 0 && (
+      {(aiBubbles.length > 0 || chatWithBubbleViews.length > 0) && (
         <div className="fixed bottom-4 right-4 z-[210] flex max-w-[360px] flex-col items-end gap-2">
+          {chatWithBubbleViews.map((bubble) => {
+            const isOpen = chatWithModal.open && activeChatWithBubble?.id === bubble.id;
+            return (
+              <div
+                key={bubble.id}
+                className={[
+                  'flex w-full items-center gap-2 rounded-xl border px-3 py-2 shadow-sm',
+                  'bg-white/95 hover:bg-white dark:bg-gray-950/90 dark:hover:bg-gray-950',
+                  'border-gray-200 dark:border-gray-800',
+                  isOpen ? 'ring-2 ring-blue-500/30' : '',
+                ].join(' ')}
+                title={bubble.label}
+              >
+                <button
+                  type="button"
+                  onClick={() => void openChatWithBubble(bubble.id)}
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                >
+                  <span className="shrink-0">
+                    {bubble.status === 'streaming' && <Loader2 size={14} className="animate-spin text-gray-500" />}
+                    {bubble.status === 'done' && <MessageSquare size={14} className="text-blue-600 dark:text-blue-300" />}
+                    {bubble.status === 'error' && <AlertTriangle size={14} className="text-red-600 dark:text-red-300" />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-xs font-semibold text-gray-800 dark:text-gray-100">{bubble.title}</div>
+                    <div className="truncate text-[11px] text-gray-500 dark:text-gray-400">{bubble.preview}</div>
+                  </div>
+                  <span className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">Chat</span>
+                </button>
+                <button
+                  type="button"
+                  className="shrink-0 rounded p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void dismissChatWithBubble(bubble.id);
+                  }}
+                  title="关闭"
+                  aria-label={`关闭 ${bubble.title}`}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            );
+          })}
 	          {aiBubbles.map((b) => {
 	            const ACTIVE_STATUSES: WorkstudioAiBubbleStatus[] = ['queued', 'connecting', 'thinking', 'streaming', 'tool_calling'];
 	            const isActive = ACTIVE_STATUSES.includes(b.status);
@@ -12477,82 +12908,105 @@ type OpenFromLinkErrorInfo = {
         </div>
       )}
 
-      {inlineChatComposer.open && inlineChatComposer.selection && (
-        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/30 p-4">
-          <div className="flex h-[calc(100vh-8rem)] w-full max-w-6xl flex-col rounded-xl border border-gray-200 bg-white shadow-xl dark:border-gray-800 dark:bg-gray-950">
-            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 p-4 dark:border-gray-800">
+      {chatWithModal.open && (
+        <div className="fixed inset-0 z-[220] flex items-center justify-center bg-black/35 p-4">
+          <div className="flex h-[calc(100vh-5rem)] w-full max-w-[1400px] flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-gray-100 px-5 py-4 dark:border-gray-800">
               <div className="min-w-0">
-                <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">Chat with</div>
-                <div className="mt-0.5 truncate text-[11px] text-gray-500 dark:text-gray-400">
-                  {inlineChatComposer.selection.label}
+                <div className="truncate text-base font-semibold text-gray-900 dark:text-gray-100">
+                  {activeChatWithBubble
+                    ? activeChatWithBubble.title
+                    : chatWithModal.pendingSelection
+                      ? buildChatWithDisplayTitle(chatWithModal.pendingSelection.filePath, chatWithModal.pendingSelection.range)
+                      : 'Chat with'}
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                  {(activeChatWithBubble?.filePath || chatWithModal.pendingSelection?.filePath) && (
+                    <span className="rounded bg-gray-100 px-2 py-0.5 dark:bg-gray-900/70">
+                      {toWorkstudioRelativePath(activeChatWithBubble?.filePath ?? chatWithModal.pendingSelection?.filePath ?? '')}
+                    </span>
+                  )}
+                  {formatOutlineRangeLabel(activeChatWithBubble?.range ?? chatWithModal.pendingSelection?.range)}
                 </div>
               </div>
-              <button
-                type="button"
-                className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
-                onClick={closeInlineChatComposer}
-                title="关闭"
-              >
-                <X size={16} />
-              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                  onClick={() => setChatWithModal((prev) => ({ ...prev, showCodePanel: !prev.showCodePanel }))}
+                >
+                  {chatWithModal.showCodePanel ? '隐藏代码' : '显示代码'}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
+                  onClick={() => {
+                    const filePathToOpen = activeChatWithBubble?.filePath ?? chatWithModal.pendingSelection?.filePath ?? '';
+                    const range = activeChatWithBubble?.range ?? chatWithModal.pendingSelection?.range;
+                    if (!filePathToOpen) return;
+                    void openLinkTarget({
+                      filePath: filePathToOpen,
+                      line: range?.startLine,
+                      column: range?.startColumn,
+                      endLine: range?.endLine,
+                      endColumn: range?.endColumn,
+                    });
+                  }}
+                  disabled={!(activeChatWithBubble?.filePath ?? chatWithModal.pendingSelection?.filePath)}
+                >
+                  定位源码
+                </button>
+                <button
+                  type="button"
+                  className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+                  onClick={closeChatWithModal}
+                  title="关闭"
+                >
+                  <X size={16} />
+                </button>
+              </div>
             </div>
 
-            <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(280px,36%)_1fr]">
-              <div className="flex min-h-0 flex-col gap-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-900/30">
-                <div className="text-[11px] font-semibold text-gray-700 dark:text-gray-200">选中代码</div>
-                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white p-2 text-[11px] text-gray-800 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100">
-                  {(() => {
-                    const raw = inlineChatComposer.selection?.text ?? '';
-                    const limit = 5000;
-                    return raw.length > limit ? `${raw.slice(0, limit)}
-…（已截断）` : raw;
-                  })()}
-                </pre>
-                <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                  将使用标准 Chat 会话发送本次问题，后续追问与调试能力完全复用 ChatView。
-                </div>
-              </div>
-
-              <div className="flex min-h-0 flex-col rounded-lg border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-950">
-                <div className="mb-2 text-[11px] font-medium text-gray-600 dark:text-gray-300">问题</div>
-                <textarea
-                  value={inlineChatComposer.question}
-                  onChange={(e) => setInlineChatComposer((prev) => ({ ...prev, question: e.target.value }))}
-                  rows={8}
-                  autoCorrect="off"
-                  autoCapitalize="off"
-                  autoComplete="off"
-                  spellCheck={false}
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                      e.preventDefault();
-                      void submitInlineChat();
-                    }
-                  }}
-                  className="min-h-[200px] w-full flex-1 resize-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none focus:ring-2 focus:ring-blue-500/40 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
-                  placeholder="例如：这段代码为什么这样设计？业务调用路径是什么？"
-                />
-                <div className="mt-3 flex items-center justify-between gap-3">
-                  <div className="text-[11px] text-gray-400 dark:text-gray-500">⌘/Ctrl + Enter 发送到 Chat 会话</div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      className="rounded-lg border border-gray-200 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-800 dark:text-gray-200 dark:hover:bg-gray-900/40"
-                      onClick={closeInlineChatComposer}
-                    >
-                      取消
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                      disabled={!inlineChatComposer.question.trim() || inlineChatComposer.submitting}
-                      onClick={() => void submitInlineChat()}
-                    >
-                      {inlineChatComposer.submitting && <Loader2 size={12} className="animate-spin" />}
-                      <span>{inlineChatComposer.submitting ? '打开中…' : '在 Chat 中打开'}</span>
-                    </button>
+            <div className="min-h-0 flex flex-1 overflow-hidden">
+              {chatWithModal.showCodePanel && (
+                <div className="flex w-[360px] max-w-[38%] shrink-0 flex-col border-r border-gray-100 bg-gray-50/70 dark:border-gray-800 dark:bg-gray-900/20">
+                  <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-800">
+                    <div className="text-xs font-semibold text-gray-800 dark:text-gray-100">代码上下文</div>
+                    <div className="mt-1 truncate text-[11px] text-gray-500 dark:text-gray-400">
+                      {activeChatWithBubble?.label ?? chatWithModal.pendingSelection?.label ?? '当前选区'}
+                    </div>
                   </div>
+                  <pre className="min-h-0 flex-1 overflow-auto px-4 py-3 text-[11px] leading-5 text-gray-800 dark:text-gray-100 whitespace-pre-wrap break-words">{(() => {
+                    const raw = activeChatWithBubble?.selectionTextSnapshot ?? chatWithModal.pendingSelection?.text ?? '';
+                    const limit = 12000;
+                    return raw.length > limit ? `${raw.slice(0, limit)}
+…（已截断）` : raw || '暂无代码快照';
+                  })()}</pre>
                 </div>
+              )}
+
+              <div className="min-w-0 flex-1 bg-white dark:bg-gray-950">
+                {chatWithModal.loading ? (
+                  <div className="flex h-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 size={16} className="animate-spin" />
+                      正在打开 Chat with…
+                    </span>
+                  </div>
+                ) : activeChatWithBubble?.sessionId ? (
+                  <ChatView
+                    sessionId={activeChatWithBubble.sessionId}
+                    autoFocus
+                    streamVisibilityTier="visible"
+                    initialOutlineDisplayMode="overlay"
+                    persistOutlineDisplayMode={false}
+                    allowOutlineDisplayModeToggle={false}
+                    showChatWithScopeBanner={false}
+                    showWorkstudioControl={false}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-sm text-gray-500 dark:text-gray-400">未找到可用的 Chat with 会话</div>
+                )}
               </div>
             </div>
           </div>
@@ -12694,9 +13148,15 @@ type OpenFromLinkErrorInfo = {
                               className="rounded-lg border border-blue-200 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800/50 dark:text-blue-300 dark:hover:bg-blue-900/20"
                               onClick={() => {
                                 closeChatWithHistoryViewer();
-                                void openHistoricalConversation(rec.conversationId!);
+                                void openChatWithThreadModal(rec, {
+                                  selectionTextSnapshot: rec.selectionTextSnapshot,
+                                  showCodePanel: true,
+                                }).catch((err) => {
+                                  const message = err instanceof Error ? err.message : String(err);
+                                  showNavToast(message || '打开 Chat with 会话失败');
+                                });
                               }}
-                              title="打开真实 Chat 会话"
+                              title="打开 Chat with 会话"
                             >
                               打开对话
                             </button>
