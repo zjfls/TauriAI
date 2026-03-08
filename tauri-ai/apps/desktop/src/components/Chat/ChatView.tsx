@@ -17,6 +17,7 @@ import {
   useSessionStore,
 } from '../../stores/sessionStore';
 import { useConfigStore } from '../../stores/configStore';
+import { useWorkstudioChatWithStore } from '../../stores/workstudioChatWithStore';
 import { MessageList, type MessageListHandle } from './MessageList';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import { ToolSessionsPanel } from './ToolSessionsPanel';
@@ -194,13 +195,31 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const isGenerating = session?.isGenerating ?? false;
   const conversationId = session?.conversationId ?? '';
   const agentName = session?.agentName ?? null;
-  const chatWithScope = session?.chatWithScope ?? null;
+  const ensureChatWithThreadForConversation = useWorkstudioChatWithStore((state) => state.ensureThreadForConversation);
+  const chatWithThread = useWorkstudioChatWithStore((state) => {
+    if (!conversationId) return null;
+    const threadId = state.threadIdByConversationId[conversationId];
+    return threadId ? state.threadsById[threadId] ?? null : null;
+  });
+  const chatWithScope = chatWithThread
+    ? {
+        filePath: chatWithThread.filePath,
+        languageId: chatWithThread.languageId,
+        label: chatWithThread.label,
+        range: chatWithThread.range,
+      }
+    : null;
 
   const maybeAcknowledgeUnreadCompletion = useCallback(() => {
     if (!sessionId) return;
     if (!session?.hasUnreadCompletion) return;
     acknowledgeUnreadCompletion(sessionId);
   }, [acknowledgeUnreadCompletion, session?.hasUnreadCompletion, sessionId]);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    void ensureChatWithThreadForConversation(conversationId).catch(() => {});
+  }, [conversationId, ensureChatWithThreadForConversation]);
 
   // 目录：文本提取与缩略
   const messageToOutlineText = useCallback((m: Message): string => {
@@ -960,9 +979,10 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   }, [ensureWorkstudio]);
 
   const openChatWithSource = useCallback(async () => {
-    if (!chatWithScope || !session?.workstudioId) return;
+    const workstudioId = chatWithThread?.workstudioId ?? session?.workstudioId ?? null;
+    if (!chatWithScope || !workstudioId) return;
     await openWorkstudioFileInWorkspace({
-      workstudioId: session.workstudioId,
+      workstudioId,
       target: {
         filePath: chatWithScope.filePath,
         line: chatWithScope.range?.startLine,
@@ -971,7 +991,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         endColumn: chatWithScope.range?.endColumn,
       },
     });
-  }, [chatWithScope, session?.workstudioId]);
+  }, [chatWithScope, chatWithThread?.workstudioId, session?.workstudioId]);
 
   // 快捷键：打开 Workstudio（仅作用于“当前聚焦 Pane”的 ChatView）
   useEffect(() => {

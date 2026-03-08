@@ -882,12 +882,45 @@ pub struct WorkstudioChatWithScope {
     pub range: Option<CodeSnippetRange>,
 }
 
-/// Lightweight summary for "Chat with" records grouped by file (used by Explorer markers).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithThread {
+    pub id: String,
+    pub workstudio_id: String,
+    pub conversation_id: String,
+    pub agent_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    pub title: String,
+    pub file_path: String,
+    pub language_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_text_snapshot: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioChatWithThreadLookup {
+    pub workstudio_id: String,
+    pub agent_name: String,
+    pub file_path: String,
+    pub language_id: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
+}
+
+/// Lightweight summary for "Chat with" threads grouped by file (used by Explorer markers).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkstudioChatWithFileSummary {
     pub file_path: String,
-    pub record_count: u32,
+    pub thread_count: u32,
     pub updated_at: DateTime<Utc>,
 }
 

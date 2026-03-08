@@ -6,6 +6,7 @@ import type {
   LspServerStatus,
   WorkstudioChatWithFileSummary,
   WorkstudioChatWithRecord,
+  WorkstudioChatWithThread,
   WorkstudioFolderAnalysis,
   WorkstudioFolderAnalysisSummary,
   WorkstudioSymbolAnalysis,
@@ -400,6 +401,49 @@ export type WorkstudioChatWithFileSummariesArgs = {
   limit?: number;
 };
 
+export type FindWorkstudioChatWithThreadArgs = {
+  workstudioId: string;
+  agentName: string;
+  filePath: string;
+  languageId?: string;
+  label?: string;
+  range?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+};
+
+export const findWorkstudioChatWithThread = async (
+  args: FindWorkstudioChatWithThreadArgs
+): Promise<WorkstudioChatWithThread | null> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithThread | null>('find_workstudio_chat_with_thread', { args });
+};
+
+export const saveWorkstudioChatWithThread = async (thread: WorkstudioChatWithThread): Promise<WorkstudioChatWithThread> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithThread>('save_workstudio_chat_with_thread', { args: { thread } });
+};
+
+export const getWorkstudioChatWithThreadByConversation = async (
+  conversationId: string
+): Promise<WorkstudioChatWithThread | null> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithThread | null>('get_workstudio_chat_with_thread_by_conversation', { conversationId });
+};
+
+export const listWorkstudioChatWithThreadsForFile = async (
+  args: WorkstudioChatWithFileKey
+): Promise<WorkstudioChatWithThread[]> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithThread[]>('list_workstudio_chat_with_threads_for_file', { args });
+};
+
 export const listWorkstudioChatWithRecordsForFile = async (
   args: WorkstudioChatWithFileKey
 ): Promise<WorkstudioChatWithRecord[]> => {
@@ -418,6 +462,16 @@ export const listWorkstudioChatWithFileSummaries = async (
   return invoke<WorkstudioChatWithFileSummary[]>('list_workstudio_chat_with_file_summaries', { args });
 };
 
+export const touchWorkstudioChatWithThreadForConversation = async (args: {
+  conversationId: string;
+  modelRef?: string;
+}): Promise<WorkstudioChatWithThread | null> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  return invoke<WorkstudioChatWithThread | null>('touch_workstudio_chat_with_thread_for_conversation', { args });
+};
+
 export const deleteWorkstudioChatWithRecordsForFile = async (
   args: Omit<WorkstudioChatWithFileKey, 'limit'>
 ): Promise<void> => {
@@ -432,4 +486,14 @@ export const deleteWorkstudioChatWithRecord = async (args: { workstudioId: strin
     throw new Error('Not running in Tauri');
   }
   await invoke<void>('delete_workstudio_chat_with_record', { args });
+};
+
+export const deleteWorkstudioChatWithThread = async (args: {
+  threadId: string;
+  workstudioId?: string;
+}): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('Not running in Tauri');
+  }
+  await invoke<void>('delete_workstudio_chat_with_thread', { args });
 };

@@ -1118,11 +1118,29 @@ export interface WorkstudioFolderAnalysisSummary {
   updatedAt: string;
 }
 
-export interface ChatWithScope {
+export interface WorkstudioCodeAnchor {
   filePath: string;
   languageId: string;
   label: string;
   range?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+}
+
+export type ChatWithScope = WorkstudioCodeAnchor;
+
+export interface WorkstudioChatWithThread {
+  id: string;
+  workstudioId: string;
+  conversationId: string;
+  agentName: string;
+  modelRef?: string;
+  title: string;
+  filePath: string;
+  languageId: string;
+  label: string;
+  range?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  selectionTextSnapshot?: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 /**
@@ -1157,7 +1175,7 @@ export interface WorkstudioChatWithRecord {
  */
 export interface WorkstudioChatWithFileSummary {
   filePath: string;
-  recordCount: number;
+  threadCount: number;
   updatedAt: string;
 }
 
@@ -1887,7 +1905,6 @@ export interface AgentSession {
   modelRef?: string;                  // Current model reference (can override agent default)
   conversationId: string | null;      // Associated conversation ID
   workstudioId?: string | null;       // Optional workstudio binding (workspace-enabled agents)
-  chatWithScope?: ChatWithScope | null; // Optional persistent Workstudio selection scope for Chat with
 
   // API type isolation (locked after first message)
   apiType: ApiProtocolType | null;    // null = not locked yet
@@ -1941,7 +1958,6 @@ export interface PersistedSession {
   modelRef?: string;
   conversationId: string | null;
   workstudioId?: string | null;
-  chatWithScope?: ChatWithScope | null;
   apiType: ApiProtocolType | null;  // Persisted API type lock
   runMode?: RunMode;                // Persisted run mode selection
   thinkingMode?: ThinkingMode;      // Persisted thinking mode/level
