@@ -1097,7 +1097,11 @@ fn run_desktop() {
             // AI code completion / Chat with index
             ai_code_completion,
             upsert_workstudio_chat_with_index,
+            find_workstudio_chat_with_thread,
+            save_workstudio_chat_with_thread,
             get_workstudio_chat_with_scope_for_conversation,
+            get_workstudio_chat_with_thread_by_conversation,
+            touch_workstudio_chat_with_thread_for_conversation,
             ai_analyze_workstudio_symbol,
             get_workstudio_symbol_analysis,
             list_workstudio_symbol_analysis_keys_for_file,
@@ -1109,9 +1113,11 @@ fn run_desktop() {
             delete_workstudio_folder_analysis,
             save_workstudio_folder_analysis,
             list_workstudio_chat_with_records_for_file,
+            list_workstudio_chat_with_threads_for_file,
             list_workstudio_chat_with_file_summaries,
             delete_workstudio_chat_with_record,
             delete_workstudio_chat_with_records_for_file,
+            delete_workstudio_chat_with_thread,
             // Workstudio terminal (UI)
             workstudio_terminal_create,
             workstudio_terminal_write,

@@ -24,8 +24,9 @@ use crate::config::ConfigManager;
 use crate::models::{
     AppConfig, CodeSnippetRange, ContentPart, Message, MessageRole, MessageStatus, Workstudio,
     WorkstudioChatWithFileSummary, WorkstudioChatWithIndexEntry, WorkstudioChatWithRecord,
-    WorkstudioChatWithScope, WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary,
-    WorkstudioSymbolAnalysis, WorkstudioSymbolAnalysisSummary,
+    WorkstudioChatWithScope, WorkstudioChatWithThread, WorkstudioChatWithThreadLookup,
+    WorkstudioFolderAnalysis, WorkstudioFolderAnalysisSummary, WorkstudioSymbolAnalysis,
+    WorkstudioSymbolAnalysisSummary,
 };
 use crate::storage::async_db;
 use crate::storage::Database;
@@ -1410,6 +1411,221 @@ pub async fn get_workstudio_chat_with_scope_for_conversation(
     )
     .await
     .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindWorkstudioChatWithThreadArgs {
+    pub workstudio_id: String,
+    pub agent_name: String,
+    pub file_path: String,
+    #[serde(default)]
+    pub language_id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub range: Option<CodeSnippetRange>,
+}
+
+#[tauri::command]
+pub async fn find_workstudio_chat_with_thread(
+    args: FindWorkstudioChatWithThreadArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioChatWithThread>, String> {
+    let lookup = WorkstudioChatWithThreadLookup {
+        workstudio_id: args.workstudio_id.trim().to_string(),
+        agent_name: args.agent_name.trim().to_string(),
+        file_path: args.file_path.trim().to_string(),
+        language_id: args.language_id.trim().to_string(),
+        label: args.label.trim().to_string(),
+        range: args.range,
+    };
+
+    if lookup.workstudio_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if lookup.agent_name.is_empty() {
+        return Err("agentName 为空".to_string());
+    }
+    if lookup.file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+
+    async_db::with_db(db.inner(), "find_workstudio_chat_with_thread", |db| {
+        db.find_workstudio_chat_with_thread(&lookup)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveWorkstudioChatWithThreadArgs {
+    pub thread: WorkstudioChatWithThread,
+}
+
+#[tauri::command]
+pub async fn save_workstudio_chat_with_thread(
+    args: SaveWorkstudioChatWithThreadArgs,
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<WorkstudioChatWithThread, String> {
+    if args.thread.workstudio_id.trim().is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if args.thread.conversation_id.trim().is_empty() {
+        return Err("conversationId 为空".to_string());
+    }
+    if args.thread.file_path.trim().is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+
+    let saved = async_db::with_db(db.inner(), "save_workstudio_chat_with_thread", |db| {
+        db.save_workstudio_chat_with_thread(&args.thread)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    emit_workstudio_chat_with_index_changed(
+        &app_handle,
+        &saved.workstudio_id,
+        Some(&saved.file_path),
+        Some(&saved.conversation_id),
+    );
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn get_workstudio_chat_with_thread_by_conversation(
+    conversation_id: String,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioChatWithThread>, String> {
+    let conversation_id = conversation_id.trim();
+    if conversation_id.is_empty() {
+        return Err("conversationId 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "get_workstudio_chat_with_thread_by_conversation",
+        |db| db.get_workstudio_chat_with_thread_by_conversation(conversation_id),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkstudioChatWithThreadsForFileArgs {
+    pub workstudio_id: String,
+    pub file_path: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn list_workstudio_chat_with_threads_for_file(
+    args: ListWorkstudioChatWithThreadsForFileArgs,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Vec<WorkstudioChatWithThread>, String> {
+    let ws_id = args.workstudio_id.trim();
+    let file_path = args.file_path.trim();
+    let limit = args.limit.unwrap_or(200) as usize;
+
+    if ws_id.is_empty() {
+        return Err("workstudioId 为空".to_string());
+    }
+    if file_path.is_empty() {
+        return Err("filePath 为空".to_string());
+    }
+
+    async_db::with_db(
+        db.inner(),
+        "list_workstudio_chat_with_threads_for_file",
+        |db| db.list_workstudio_chat_with_threads_for_file(ws_id, file_path, limit),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TouchWorkstudioChatWithThreadForConversationArgs {
+    pub conversation_id: String,
+    #[serde(default)]
+    pub model_ref: Option<String>,
+}
+
+#[tauri::command]
+pub async fn touch_workstudio_chat_with_thread_for_conversation(
+    args: TouchWorkstudioChatWithThreadForConversationArgs,
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<Option<WorkstudioChatWithThread>, String> {
+    let conversation_id = args.conversation_id.trim().to_string();
+    if conversation_id.is_empty() {
+        return Err("conversationId 为空".to_string());
+    }
+
+    let touched = async_db::with_db(
+        db.inner(),
+        "touch_workstudio_chat_with_thread_for_conversation",
+        |db| {
+            db.touch_workstudio_chat_with_thread_for_conversation(
+                &conversation_id,
+                args.model_ref.as_deref(),
+            )
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(thread) = touched.as_ref() {
+        emit_workstudio_chat_with_index_changed(
+            &app_handle,
+            &thread.workstudio_id,
+            Some(&thread.file_path),
+            Some(&thread.conversation_id),
+        );
+    }
+
+    Ok(touched)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWorkstudioChatWithThreadArgs {
+    pub thread_id: String,
+    #[serde(default)]
+    pub workstudio_id: Option<String>,
+}
+
+#[tauri::command]
+pub async fn delete_workstudio_chat_with_thread(
+    args: DeleteWorkstudioChatWithThreadArgs,
+    app_handle: tauri::AppHandle,
+    db: tauri::State<'_, Arc<Mutex<Database>>>,
+) -> Result<(), String> {
+    let thread_id = args.thread_id.trim().to_string();
+    if thread_id.is_empty() {
+        return Err("threadId 为空".to_string());
+    }
+
+    async_db::with_db(db.inner(), "delete_workstudio_chat_with_thread", |db| {
+        db.delete_workstudio_chat_with_thread(&thread_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(workstudio_id) = args
+        .workstudio_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        emit_workstudio_chat_with_index_changed(&app_handle, workstudio_id, None, None);
+    }
+    Ok(())
 }
 
 #[derive(Debug, serde::Deserialize)]

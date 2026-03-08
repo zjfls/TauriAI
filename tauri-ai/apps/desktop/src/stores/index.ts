@@ -7,3 +7,4 @@ export { useConfigStore } from './configStore';
 export { useConversationStore } from './conversationStore';
 export { useSessionStore } from './sessionStore';
 export { useUIStore } from './uiStore';
+export { useWorkstudioChatWithStore } from './workstudioChatWithStore';

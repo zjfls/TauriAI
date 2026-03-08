@@ -27,7 +27,6 @@ import type {
   RunMode,
   Conversation,
   QueuedSessionMessage,
-  ChatWithScope,
 } from '../types';
 import { getApiProtocol, getDefaultThinkingMode, getProviderType } from '../utils/apiUtils';
 import { hydrateMessagesFromBackend } from '../utils/hydrateMessages';
@@ -448,13 +447,6 @@ export interface SessionState {
 
   // Session operations
   createSession: (agentName: string) => Promise<string>;
-  openChatWithSession: (args: {
-    agentName: string;
-    workstudioId: string;
-    scope: ChatWithScope;
-    selectionText: string;
-    question?: string;
-  }) => Promise<string>;
   closeSession: (sessionId: string) => Promise<void>;
   /** 把一个会话（conversation）停靠/移入另一个窗口（作为 tab 或分屏），成功后关闭本窗口该 tab */
   dockSessionToWindow: (sessionId: string, targetWindowLabel: string, placement?: ChatDockPlacement) => Promise<void>;
@@ -546,66 +538,6 @@ const drainingQueuedSessions = new Set<string>();
 
 const cloneQueuedImages = (images?: ContentPart[]): ContentPart[] | undefined =>
   images ? images.map((part) => ({ ...part })) : undefined;
-
-const normalizeFsPath = (value: string): string => value.replace(/\\/g, '/');
-
-const sameCodeSnippetRange = (
-  left?: ChatWithScope['range'] | null,
-  right?: ChatWithScope['range'] | null
-): boolean => {
-  if (!left && !right) return true;
-  if (!left || !right) return false;
-  return (
-    left.startLine === right.startLine &&
-    left.startColumn === right.startColumn &&
-    left.endLine === right.endLine &&
-    left.endColumn === right.endColumn
-  );
-};
-
-const sameChatWithScope = (
-  left?: ChatWithScope | null,
-  right?: ChatWithScope | null
-): boolean => {
-  if (!left || !right) return false;
-  return (
-    normalizeFsPath(left.filePath) === normalizeFsPath(right.filePath) &&
-    left.languageId === right.languageId &&
-    sameCodeSnippetRange(left.range, right.range)
-  );
-};
-
-const formatChatWithTitle = (scope: ChatWithScope): string => {
-  const normalized = normalizeFsPath(scope.filePath || '');
-  const base = normalized.split('/').filter(Boolean).pop() || normalized || 'Chat with';
-  const range = scope.range;
-  if (!range) return `Chat with · ${base}`;
-  const lineLabel =
-    range.startLine === range.endLine
-      ? `L${range.startLine}`
-      : `L${range.startLine}-${range.endLine}`;
-  return `Chat with · ${base} · ${lineLabel}`;
-};
-
-const buildChatWithSnippet = (
-  scope: ChatWithScope,
-  selectionText: string
-): CodeSnippetContentPart => ({
-  type: 'code_snippet',
-  id: crypto.randomUUID(),
-  label: scope.label,
-  text: selectionText,
-  languageId: scope.languageId || undefined,
-  filePath: scope.filePath || undefined,
-  range: scope.range
-    ? {
-        startLine: scope.range.startLine,
-        startColumn: scope.range.startColumn,
-        endLine: scope.range.endLine,
-        endColumn: scope.range.endColumn,
-      }
-    : undefined,
-});
 
 const enqueueQueuedMessage = (
   sessionId: string,
@@ -812,7 +744,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       modelRef,
       conversationId: conversation.id,
       workstudioId: resolvedWorkstudioId,
-      chatWithScope: null,
       apiType: apiProtocol,
       runMode,
       thinkingMode,
@@ -847,95 +778,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
     const { useConversationStore } = await import('./conversationStore');
     await useConversationStore.getState().loadConversations();
-
-    return sessionId;
-  },
-
-  openChatWithSession: async ({ agentName, workstudioId, scope, selectionText, question }) => {
-    const normalizedWorkstudioId = String(workstudioId ?? '').trim();
-    const normalizedQuestion = String(question ?? '').trim();
-    const normalizedScope: ChatWithScope = {
-      filePath: String(scope.filePath ?? '').trim(),
-      languageId: String(scope.languageId ?? '').trim(),
-      label: String(scope.label ?? '').trim() || '选中代码',
-      range: scope.range
-        ? {
-            startLine: scope.range.startLine,
-            startColumn: scope.range.startColumn,
-            endLine: scope.range.endLine,
-            endColumn: scope.range.endColumn,
-          }
-        : undefined,
-    };
-
-    if (!normalizedWorkstudioId) {
-      throw new Error('workstudioId 为空');
-    }
-    if (!normalizedScope.filePath) {
-      throw new Error('chat with filePath 为空');
-    }
-    if (!selectionText.trim()) {
-      throw new Error('chat with 选区内容为空');
-    }
-
-    const existing = Array.from(get().sessions.values()).find(
-      (session) =>
-        session.agentName === agentName &&
-        (session.workstudioId ?? '').trim() === normalizedWorkstudioId &&
-        sameChatWithScope(session.chatWithScope, normalizedScope)
-    );
-
-    const title = formatChatWithTitle(normalizedScope);
-    const sessionId = existing?.id ?? (await get().createSession(agentName));
-
-    set((state) => {
-      const newSessions = new Map(state.sessions);
-      const currentSession = newSessions.get(sessionId);
-      if (!currentSession) return state;
-      newSessions.set(sessionId, {
-        ...currentSession,
-        title,
-        workstudioId: normalizedWorkstudioId,
-        chatWithScope: normalizedScope,
-        lastActiveAt: new Date().toISOString(),
-      });
-      return {
-        sessions: newSessions,
-        activeSessionId: sessionId,
-      };
-    });
-
-    useWorkspaceTabStore.getState().upsertChatTab(sessionId);
-    const layout = useWindowLayoutStore.getState();
-    layout.openTabInPane(layout.getPreferredChatPaneId(), chatTabId(sessionId));
-
-    const session = get().sessions.get(sessionId);
-    if (session?.conversationId) {
-      await invoke('update_conversation_metadata', {
-        conversationId: session.conversationId,
-        workstudioId: normalizedWorkstudioId,
-      }).catch(console.error);
-      await invoke('update_conversation_title', {
-        conversationId: session.conversationId,
-        title,
-      }).catch(console.error);
-      void import('./conversationStore')
-        .then(({ useConversationStore }) => {
-          useConversationStore.getState().patchConversation(session.conversationId!, {
-            title,
-            workstudioId: normalizedWorkstudioId,
-          });
-        })
-        .catch(() => {});
-    }
-
-    await get().saveSessionState();
-
-    if (normalizedQuestion) {
-      await get().sendMessage(sessionId, normalizedQuestion, undefined, [
-        buildChatWithSnippet(normalizedScope, selectionText),
-      ]);
-    }
 
     return sessionId;
   },
@@ -1697,24 +1539,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const baseContent = fullContent || getTextFromBlocks().text;
     let finalContent = baseContent && baseContent.trim().length > 0 ? baseContent : '';
 
-    const chatWithScope = session.chatWithScope ?? null;
-    const chatWithIndexedUserMessageId = (() => {
-      const pending = [...session.messages]
-        .reverse()
-        .find((message) => message.role === 'user' && message.status === 'pending');
-      if (pending?.id) return pending.id;
-      if (!assistantMessageId) return null;
-      const assistantIndex = session.messages.findIndex((message) => message.id === assistantMessageId);
-      if (assistantIndex <= 0) return null;
-      for (let index = assistantIndex - 1; index >= 0; index -= 1) {
-        const candidate = session.messages[index];
-        if (candidate?.role === 'user') {
-          return candidate.id;
-        }
-      }
-      return null;
-    })();
-
     // 兜底：某些服务会把“可见输出”错误地放到 thinking 通道里，导致正文为空
     // 这里把“仅有 thinking、正文为空”的情况当作正文展示，避免用户看到一片空白。
     if (!finalContent && finalThinking) {
@@ -1876,22 +1700,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    });
 
     void syncUnreadCompletionBadge(countUnreadCompletions(get().sessions));
-    if (chatWithScope && session.workstudioId && session.conversationId && chatWithIndexedUserMessageId) {
-      void invoke('upsert_workstudio_chat_with_index', {
+    if (session.conversationId) {
+      void invoke('touch_workstudio_chat_with_thread_for_conversation', {
         args: {
-          workstudioId: session.workstudioId,
           conversationId: session.conversationId,
-          userMessageId: chatWithIndexedUserMessageId,
-          assistantMessageId: resolvedAssistantMessageId,
-          agentName: session.agentName,
           modelRef: model || session.modelRef,
-          filePath: chatWithScope.filePath,
-          languageId: chatWithScope.languageId,
-          label: chatWithScope.label,
-          range: chatWithScope.range,
         },
       }).catch((error) => {
-        console.warn('upsert_workstudio_chat_with_index failed:', error);
+        console.warn('touch_workstudio_chat_with_thread_for_conversation failed:', error);
       });
     }
     if (shouldNotify) {
@@ -2474,9 +2290,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	          (item, index) =>
 	            item.id === next[index]?.id &&
 	            item.type === next[index]?.type &&
-            item.label === next[index]?.label &&
+	            item.label === next[index]?.label &&
 	            item.filePath === next[index]?.filePath &&
-            item.languageId === next[index]?.languageId &&
+	            item.languageId === next[index]?.languageId &&
 	            item.range?.startLine === next[index]?.range?.startLine &&
 	            item.range?.startColumn === next[index]?.range?.startColumn &&
 	            item.range?.endLine === next[index]?.range?.endLine &&
@@ -2628,7 +2444,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        modelRef: session.modelRef,
 	        conversationId: session.conversationId,
 	        workstudioId: session.workstudioId ?? null,
-	        chatWithScope: session.chatWithScope ?? null,
 	        apiType: session.apiType,
 	        runMode: session.runMode,
 	        thinkingMode: session.thinkingMode,
@@ -2748,7 +2563,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 			          modelRef,
 			          conversationId: persisted.conversationId,
 			          workstudioId: persisted.workstudioId ?? convWorkstudioId,
-			          chatWithScope: persisted.chatWithScope ?? null,
 			          apiType: apiProtocol,
 			          runMode,
 			          thinkingMode: coerceThinkingModeForProtocol(persisted.thinkingMode, apiProtocol, providerType),
@@ -2953,15 +2767,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       markChatOpenProfile('sessionStore:get_messages:failed', { conversationId });
     }
 
-    let chatWithScope: ChatWithScope | null = null;
-    try {
-      chatWithScope = await invoke<ChatWithScope | null>('get_workstudio_chat_with_scope_for_conversation', {
-        conversationId,
-      });
-    } catch (error) {
-      console.warn('get_workstudio_chat_with_scope_for_conversation failed:', error);
-    }
-
     const now = new Date().toISOString();
     const sessionId = crypto.randomUUID();
     setChatOpenProfileTarget({ conversationId, sessionId });
@@ -2993,7 +2798,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      modelRef,
 	      conversationId,
 	      workstudioId: resolvedWorkstudioId,
-	      chatWithScope,
 	      apiType: apiProtocol,
 	      runMode,
 	      thinkingMode: coerceThinkingModeForProtocol(conversation?.thinkingMode, apiProtocol, providerType),
@@ -3061,15 +2865,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     await useConversationStore.getState().loadConversations();
 
     const newSessionId = await get().openHistoricalConversation(cloned.id);
-    if (source.chatWithScope) {
-      set((state) => {
-        const newSessions = new Map(state.sessions);
-        const currentSession = newSessions.get(newSessionId);
-        if (!currentSession) return state;
-        newSessions.set(newSessionId, { ...currentSession, chatWithScope: source.chatWithScope });
-        return { sessions: newSessions };
-      });
-    }
     // 克隆对话：在 UI 层也保持与源会话一致的 runMode（对话级 runMode 也会在后端/DB 层复制）。
     if (source.runMode) {
       get().setSessionRunMode(newSessionId, source.runMode);
