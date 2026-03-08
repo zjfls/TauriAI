@@ -311,9 +311,10 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
           tabIds: [...p.tabIds],
         }));
         const idx = nextPanes.findIndex((p) => p.id === paneId);
-        if (idx < 0) return {};
+        if (idx < 0) return state;
         const pane = nextPanes[idx]!;
-        if (!pane.tabIds.includes(tabId)) return {};
+        if (!pane.tabIds.includes(tabId)) return state;
+        if (pane.activeTabId === tabId && state.focusedPaneId === paneId && !opts?.trackUser) return state;
         pane.activeTabId = tabId;
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId: paneId };
         const interactionTargets = resolveInteractionTargets(
@@ -516,11 +517,11 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
           tabIds: [...p.tabIds],
         }));
         const idx = nextPanes.findIndex((p) => p.id === paneId);
-        if (idx < 0) return {};
+        if (idx < 0) return state;
         const pane = nextPanes[idx]!;
         const oldIndex = pane.tabIds.indexOf(activeId);
         const newIndex = pane.tabIds.indexOf(overId);
-        if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return {};
+        if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return state;
         pane.tabIds = arrayMove(pane.tabIds, oldIndex, newIndex);
         const next = { panes: normalizePaneWeights(nextPanes), focusedPaneId: state.focusedPaneId ?? paneId };
         const interactionTargets = resolveInteractionTargets(
@@ -543,7 +544,7 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         }));
 
         const targetIdx = nextPanes.findIndex((p) => p.id === toPaneId);
-        if (targetIdx < 0) return {};
+        if (targetIdx < 0) return state;
         const target = nextPanes[targetIdx]!;
 
         const insertAt =
@@ -573,7 +574,7 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
     splitTabToNewPane: (tabId, direction, targetPaneId) => {
       set((state) => {
         const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-        if (basePanes.length === 0) return {};
+        if (basePanes.length === 0) return state;
 
         let nextPanes = basePanes.map((p) => ({
           ...p,
@@ -614,7 +615,7 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
     closePaneAndMerge: (paneId) => {
       set((state) => {
         const basePanes = ensureAtLeastOnePane(state.panes ?? []);
-        if (basePanes.length <= 1) return {};
+        if (basePanes.length <= 1) return state;
 
         const nextPanes: WindowPane[] = basePanes.map((p) => ({
           ...p,
@@ -622,7 +623,7 @@ export const useWindowLayoutStore = create<WindowLayoutState>((set, get) => {
         }));
 
         const idx = nextPanes.findIndex((p) => p.id === paneId);
-        if (idx < 0) return {};
+        if (idx < 0) return state;
 
         const closing = nextPanes[idx]!;
         const targetIdx = idx < nextPanes.length - 1 ? idx + 1 : idx - 1;

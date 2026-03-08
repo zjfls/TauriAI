@@ -98,13 +98,18 @@ const WindowPaneView: React.FC<{
 }) => {
   const activeTabId =
     pane.activeTabId && pane.tabIds.includes(pane.activeTabId) ? pane.activeTabId : pane.tabIds[0] ?? null;
+  const emptyPaneCloseRequestedRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // 当 pane 内没有任何可渲染的 tab 时（例如关闭/拖走了最后一个 tab），自动销毁该 pane。
-    if (pane.tabIds.length > 0) return;
+    if (pane.tabIds.length > 0) {
+      emptyPaneCloseRequestedRef.current = null;
+      return;
+    }
     if (!canClosePane) return;
+    if (emptyPaneCloseRequestedRef.current === pane.id) return;
+    emptyPaneCloseRequestedRef.current = pane.id;
     onClosePane();
-  }, [canClosePane, onClosePane, pane.tabIds.length]);
+  }, [canClosePane, onClosePane, pane.id, pane.tabIds.length]);
 
   const renderTab = (tabId: WorkspaceTabId) => {
     const parsed = parseWorkspaceTabId(tabId);
@@ -292,9 +297,16 @@ const ChatViewContainerInner: React.FC = () => {
   );
 
   const resolvedFocusedPaneId = resolvedLayout.focusedPaneId;
+  const reconcileSignature = useMemo(
+    () => `${sessionsHydrated ? '1' : '0'}|${preferredFallbackTabId ?? ''}|${orderedValidTabIds.join('')}`,
+    [orderedValidTabIds, preferredFallbackTabId, sessionsHydrated]
+  );
+  const lastReconcileSignatureRef = useRef<string>('');
 
   useEffect(() => {
     if (!sessionsHydrated) return;
+    if (lastReconcileSignatureRef.current === reconcileSignature) return;
+    lastReconcileSignatureRef.current = reconcileSignature;
     reconcileLayout({
       validTabIds: orderedValidTabIds,
       requiredTabIds: orderedValidTabIds,
@@ -302,7 +314,7 @@ const ChatViewContainerInner: React.FC = () => {
       fallbackTabIds: orderedValidTabIds,
       fallbackActiveTabId: preferredFallbackTabId,
     });
-  }, [orderedValidTabIds, preferredFallbackTabId, reconcileLayout, sessionsHydrated]);
+  }, [orderedValidTabIds, preferredFallbackTabId, reconcileLayout, reconcileSignature, sessionsHydrated]);
 
   // Standalone "popout" window: when it becomes empty (all tabs closed), close the window itself.
   // 说明：这类窗口通常通过“拖拽/弹出”产生，用完即走：

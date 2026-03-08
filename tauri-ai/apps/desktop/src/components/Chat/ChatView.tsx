@@ -34,6 +34,7 @@ import type {
   PtySessionInfo,
   Workstudio,
   Agent,
+  AgentSessionSummary,
   SkillMetadata,
   SkillLoadOutcome,
   SandboxPolicy,
@@ -59,6 +60,7 @@ interface ChatViewProps {
 }
 
 const EMPTY_PTY_SESSIONS: PtySessionInfo[] = [];
+const EMPTY_AGENT_SESSIONS: AgentSessionSummary[] = [];
 const CHAT_OUTLINE_DISPLAY_MODE_STORAGE_KEY = 'tauri-ai:chat:outline-display-mode:v1';
 
 function loadChatOutlineDisplayMode(): ChatOutlineDisplayMode {
@@ -602,7 +604,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
   const refreshToolSessions = useToolSessionStore((state) => state.refreshSessions);
   const refreshAgentSessions = useAgentSessionStore((state) => state.refreshSessions);
   const agentSessions = useAgentSessionStore((state) =>
-    conversationId ? state.sessionsByScopeKey[`conversation:${conversationId}`] ?? [] : []
+    conversationId ? state.sessionsByScopeKey[`conversation:${conversationId}`] ?? EMPTY_AGENT_SESSIONS : EMPTY_AGENT_SESSIONS
   );
   const toolSessions = useToolSessionStore(
     (state) =>
@@ -1460,6 +1462,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
 
   const [contextUsage, setContextUsage] = useState<ContextUsageBreakdown | null>(null);
   const contextUsageCalcIdRef = useRef(0);
+  const contextUsageSignatureRef = useRef<string>('');
 
   // Avoid briefly showing stale usage when switching sessions.
   useEffect(() => {
@@ -1468,6 +1471,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
       conversationId: conversationId || undefined,
       meta: { hadPrev: Boolean(contextUsage) },
     });
+    contextUsageSignatureRef.current = '';
     setContextUsage(null);
   }, [conversationId, sessionId]);
 
@@ -1508,6 +1512,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ sessionId, autoFocus = false
         },
       });
 
+      const signature = next ? JSON.stringify(next) : 'null';
+      if (contextUsageSignatureRef.current === signature) return;
+      contextUsageSignatureRef.current = signature;
       setContextUsage(next);
     };
 

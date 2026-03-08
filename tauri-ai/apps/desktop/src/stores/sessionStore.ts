@@ -616,7 +616,7 @@ const enqueueQueuedMessage = (
   useSessionStore.setState((state) => {
     const newSessions = new Map(state.sessions);
     const session = newSessions.get(sessionId);
-    if (!session) return {};
+    if (!session) return state;
     const nextQueue: QueuedSessionMessage[] = [
       ...(session.queuedMessages ?? []),
       {
@@ -640,9 +640,9 @@ const shiftQueuedMessage = (sessionId: string): QueuedSessionMessage | undefined
   useSessionStore.setState((state) => {
     const newSessions = new Map(state.sessions);
     const session = newSessions.get(sessionId);
-    if (!session) return {};
+    if (!session) return state;
     const queue = session.queuedMessages ?? [];
-    if (queue.length === 0) return {};
+    if (queue.length === 0) return state;
     next = queue[0];
     newSessions.set(sessionId, {
       ...session,
@@ -657,8 +657,8 @@ const clearQueuedMessagesForSession = (sessionId: string) => {
   useSessionStore.setState((state) => {
     const newSessions = new Map(state.sessions);
     const session = newSessions.get(sessionId);
-    if (!session) return {};
-    if (!session.queuedMessages || session.queuedMessages.length === 0) return {};
+    if (!session) return state;
+    if (!session.queuedMessages || session.queuedMessages.length === 0) return state;
     newSessions.set(sessionId, {
       ...session,
       queuedMessages: [],
@@ -891,7 +891,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       const currentSession = newSessions.get(sessionId);
-      if (!currentSession) return {};
+      if (!currentSession) return state;
       newSessions.set(sessionId, {
         ...currentSession,
         title,
@@ -1062,8 +1062,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   acknowledgeUnreadCompletion: (sessionId: string) => {
     set((state) => {
       const session = state.sessions.get(sessionId);
-      if (!session) return {};
-      if (!session.hasUnreadCompletion) return {};
+      if (!session) return state;
+      if (!session.hasUnreadCompletion) return state;
       const newSessions = new Map(state.sessions);
       newSessions.set(sessionId, {
         ...session,
@@ -1535,12 +1535,12 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
       const queue = session.queuedMessages ?? [];
       const currentIndex = queue.findIndex((item) => item.id === messageId);
-      if (currentIndex === -1) return {};
+      if (currentIndex === -1) return state;
       const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
-      if (targetIndex < 0 || targetIndex >= queue.length) return {};
+      if (targetIndex < 0 || targetIndex >= queue.length) return state;
       const nextQueue = queue.slice();
       const [item] = nextQueue.splice(currentIndex, 1);
       nextQueue.splice(targetIndex, 0, item);
@@ -1556,10 +1556,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
       const queue = session.queuedMessages ?? [];
       const nextQueue = queue.filter((item) => item.id !== messageId);
-      if (nextQueue.length === queue.length) return {};
+      if (nextQueue.length === queue.length) return state;
       newSessions.set(sessionId, {
         ...session,
         queuedMessages: nextQueue,
@@ -1572,13 +1572,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
       const queue = session.queuedMessages ?? [];
       const idx = queue.findIndex((item) => item.id === messageId);
-      if (idx === -1) return {};
+      if (idx === -1) return state;
       const nextQueue = queue.slice();
       const current = nextQueue[idx]!;
-      if (current.content === content) return {};
+      if (current.content === content) return state;
       nextQueue[idx] = { ...current, content };
       newSessions.set(sessionId, {
         ...session,
@@ -1994,7 +1994,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	    set((state) => {
 	      const newSessions = new Map(state.sessions);
 	      const currentSession = newSessions.get(sessionId);
-	      if (!currentSession) return {};
+	      if (!currentSession) return state;
 	      const hasUnreadCompletion = true;
 
       const updatedMessages = [...currentSession.messages];
@@ -2279,11 +2279,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Update per-session run mode (chat/agent/full access)
    */
   setSessionRunMode: (sessionId: string, runMode: RunMode) => {
+    let changed = false;
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
+      if (session.runMode === runMode) return state;
 
+      changed = true;
       newSessions.set(sessionId, {
         ...session,
         runMode,
@@ -2292,6 +2295,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       return { sessions: newSessions };
     });
+
+    if (!changed) return;
 
     get().saveSessionState();
 
@@ -2314,11 +2319,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Update per-session thinking mode/level
    */
   setSessionThinkingMode: (sessionId: string, thinkingMode: ThinkingMode) => {
+    let changed = false;
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
+      if (session.thinkingMode === thinkingMode) return state;
 
+      changed = true;
       newSessions.set(sessionId, {
         ...session,
         thinkingMode,
@@ -2327,6 +2335,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
       return { sessions: newSessions };
     });
+
+    if (!changed) return;
 
     get().saveSessionState();
 
@@ -2349,11 +2359,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Update per-session web search provider selection
    */
   setSessionWebSearchProvider: (sessionId: string, provider: 'native' | 'tavily' | 'google' | 'brave' | null) => {
+    let changed = false;
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
+      if (session.webSearchProvider === provider) return state;
 
+      changed = true;
       newSessions.set(sessionId, {
         ...session,
         webSearchProvider: provider,
@@ -2363,6 +2376,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: newSessions };
     });
 
+    if (!changed) return;
     get().saveSessionState();
   },
 
@@ -2370,13 +2384,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
    * Update per-session draft input content (unsent text)
    */
 	  setSessionDraftContent: (sessionId: string, draftContent: string) => {
+    let changed = false;
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
+      if (!session) return state;
+      if (session.draftContent === draftContent) return state;
 
-      if (session.draftContent === draftContent) return {};
-
+      changed = true;
       newSessions.set(sessionId, {
         ...session,
         draftContent,
@@ -2385,6 +2400,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return { sessions: newSessions };
     });
 
+    if (!changed) return;
     if (draftPersistTimeout) {
       clearTimeout(draftPersistTimeout);
     }
@@ -2395,10 +2411,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	  },
 
 	  setSessionDraftWorkspaceMentions: (sessionId: string, mentions: WorkspaceMentionChip[]) => {
+	    let changed = false;
 	    set((state) => {
 	      const newSessions = new Map(state.sessions);
 	      const session = newSessions.get(sessionId);
-	      if (!session) return {};
+	      if (!session) return state;
 
 	      const raw = Array.isArray(mentions) ? mentions : [];
 	      const next: WorkspaceMentionChip[] = [];
@@ -2412,7 +2429,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	        seen.add(id);
 	        next.push({ id, absPath, label: label || absPath.split('/').pop() || absPath });
 	      }
+	      const current = Array.isArray(session.draftWorkspaceMentions) ? session.draftWorkspaceMentions : [];
+	      const same =
+	        current.length === next.length &&
+	        current.every(
+	          (item, index) =>
+	            item.id === next[index]?.id &&
+	            item.absPath === next[index]?.absPath &&
+	            item.label === next[index]?.label
+	        );
+	      if (same) return state;
 
+	      changed = true;
 	      newSessions.set(sessionId, {
 	        ...session,
 	        draftWorkspaceMentions: next,
@@ -2421,6 +2449,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	      return { sessions: newSessions };
 	    });
 
+	    if (!changed) return;
 	    if (draftPersistTimeout) {
 	      clearTimeout(draftPersistTimeout);
 	    }
@@ -2431,27 +2460,47 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 	  },
 
 	  setSessionDraftCodeSnippets: (sessionId: string, snippets: CodeSnippetContentPart[]) => {
+	    let changed = false;
 	    set((state) => {
 	      const newSessions = new Map(state.sessions);
 	      const session = newSessions.get(sessionId);
-      if (!session) return {};
+	      if (!session) return state;
 
-      const next = Array.isArray(snippets) ? snippets.filter((s) => s?.type === 'code_snippet') : [];
-      newSessions.set(sessionId, {
-        ...session,
-        draftCodeSnippets: next,
-      });
+	      const next = Array.isArray(snippets) ? snippets.filter((s) => s?.type === 'code_snippet') : [];
+	      const current = Array.isArray(session.draftCodeSnippets) ? session.draftCodeSnippets : [];
+	      const same =
+	        current.length === next.length &&
+	        current.every(
+	          (item, index) =>
+	            item.id === next[index]?.id &&
+	            item.type === next[index]?.type &&
+	            item.filePath === next[index]?.filePath &&
+	            item.language === next[index]?.language &&
+	            item.range?.startLine === next[index]?.range?.startLine &&
+	            item.range?.startColumn === next[index]?.range?.startColumn &&
+	            item.range?.endLine === next[index]?.range?.endLine &&
+	            item.range?.endColumn === next[index]?.range?.endColumn &&
+	            item.text === next[index]?.text
+	        );
+	      if (same) return state;
 
-      return { sessions: newSessions };
-    });
+	      changed = true;
+	      newSessions.set(sessionId, {
+	        ...session,
+	        draftCodeSnippets: next,
+	      });
 
-    if (draftPersistTimeout) {
-      clearTimeout(draftPersistTimeout);
-    }
-    draftPersistTimeout = setTimeout(() => {
-      draftPersistTimeout = null;
-      void get().saveSessionState();
-    }, DRAFT_PERSIST_DEBOUNCE_MS);
+	      return { sessions: newSessions };
+	    });
+
+	    if (!changed) return;
+	    if (draftPersistTimeout) {
+	      clearTimeout(draftPersistTimeout);
+	    }
+	    draftPersistTimeout = setTimeout(() => {
+	      draftPersistTimeout = null;
+	      void get().saveSessionState();
+	    }, DRAFT_PERSIST_DEBOUNCE_MS);
   },
 
   setSessionTitle: (sessionId: string, title: string) => {
@@ -2461,8 +2510,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     set((state) => {
       const newSessions = new Map(state.sessions);
       const session = newSessions.get(sessionId);
-      if (!session) return {};
-      if (session.title === next) return {};
+      if (!session) return state;
+      if (session.title === next) return state;
       newSessions.set(sessionId, { ...session, title: next });
       return { sessions: newSessions };
     });
@@ -3015,7 +3064,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set((state) => {
         const newSessions = new Map(state.sessions);
         const currentSession = newSessions.get(newSessionId);
-        if (!currentSession) return {};
+        if (!currentSession) return state;
         newSessions.set(newSessionId, { ...currentSession, chatWithScope: source.chatWithScope });
         return { sessions: newSessions };
       });
@@ -3606,7 +3655,7 @@ export const initStreamListeners = async () => {
             useSessionStore.setState((state) => {
               const newSessions = new Map(state.sessions);
               const currentSession = newSessions.get(session.id);
-              if (!currentSession) return {};
+              if (!currentSession) return state;
               newSessions.set(session.id, { ...currentSession, messages: next });
               return { sessions: newSessions };
             });
@@ -3623,7 +3672,7 @@ export const initStreamListeners = async () => {
         useSessionStore.setState((state) => {
           const newSessions = new Map(state.sessions);
           const currentSession = newSessions.get(session.id);
-          if (!currentSession) return {};
+          if (!currentSession) return state;
 
           const turns: StreamingTurnsById =
             currentSession.streamingTurns ?? new Map<string, MessageTurn>();
@@ -3655,7 +3704,7 @@ export const initStreamListeners = async () => {
         useSessionStore.setState((state) => {
           const newSessions = new Map(state.sessions);
           const currentSession = newSessions.get(session.id);
-          if (!currentSession) return {};
+          if (!currentSession) return state;
 
           const turns: StreamingTurnsById =
             currentSession.streamingTurns ?? new Map<string, MessageTurn>();
