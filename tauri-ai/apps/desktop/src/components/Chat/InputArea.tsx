@@ -5,6 +5,7 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy, GitBranch, Loader2, Plus } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
@@ -687,6 +688,140 @@ export const calculateTextareaHeight = (
  * @property {boolean} supportsVision - Whether current model supports vision (enables/disables image option)
  * @property {boolean} [disabled] - Whether the menu is disabled
  */
+type FloatingMenuAlign = 'left' | 'right';
+
+interface FloatingMenuPortalProps {
+  open: boolean;
+  anchorRef: React.RefObject<HTMLElement | null>;
+  onClose: () => void;
+  align?: FloatingMenuAlign;
+  className?: string;
+  children: React.ReactNode;
+}
+
+const FloatingMenuPortal: React.FC<FloatingMenuPortalProps> = ({
+  open,
+  anchorRef,
+  onClose,
+  align = 'left',
+  className = '',
+  children,
+}) => {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 8, top: 8, ready: false });
+
+  const updatePosition = useCallback(() => {
+    const anchor = anchorRef.current;
+    const panel = panelRef.current;
+    if (!open || !(anchor instanceof HTMLElement) || !panel) return;
+
+    const anchorRect = anchor.getBoundingClientRect();
+    const panelRect = panel.getBoundingClientRect();
+    const gap = 4;
+    let left = align === 'right' ? anchorRect.right - panelRect.width : anchorRect.left;
+    let top = anchorRect.top - panelRect.height - gap;
+
+    if (top < 8) {
+      top = anchorRect.bottom + gap;
+    }
+
+    const maxLeft = Math.max(8, window.innerWidth - panelRect.width - 8);
+    const maxTop = Math.max(8, window.innerHeight - panelRect.height - 8);
+    left = Math.min(Math.max(8, left), maxLeft);
+    top = Math.min(Math.max(8, top), maxTop);
+
+    setPosition((current) => {
+      if (current.left === left && current.top === top && current.ready) {
+        return current;
+      }
+      return { left, top, ready: true };
+    });
+  }, [align, anchorRef, open]);
+
+  useEffect(() => {
+    if (open) return;
+    setPosition((current) => (current.ready ? { ...current, ready: false } : current));
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePosition();
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleWindowChange = () => updatePosition();
+    window.addEventListener('resize', handleWindowChange);
+    window.addEventListener('scroll', handleWindowChange, true);
+    return () => {
+      window.removeEventListener('resize', handleWindowChange);
+      window.removeEventListener('scroll', handleWindowChange, true);
+    };
+  }, [open, updatePosition]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (anchorRef.current?.contains(target) || panelRef.current?.contains(target)) {
+        return;
+      }
+      onClose();
+    };
+    const timer = window.setTimeout(() => {
+      document.addEventListener('mousedown', handleMouseDown);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener('mousedown', handleMouseDown);
+    };
+  }, [anchorRef, onClose, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose, open]);
+
+  if (!open) return null;
+
+  const menu = (
+    <div
+      ref={panelRef}
+      role="menu"
+      className={`fixed z-[1000] ${className}`.trim()}
+      style={{
+        left: `${position.left}px`,
+        top: `${position.top}px`,
+        visibility: position.ready ? 'visible' : 'hidden',
+      }}
+    >
+      {children}
+    </div>
+  );
+
+  return typeof document !== 'undefined' ? createPortal(menu, document.body) : menu;
+};
+
+/**
+ * Attachment menu for adding various content types
+ * 
+ * Dropdown menu that allows users to select different types of attachments
+ * to add to their message (images, text files, PDFs).
+ * 
+ * @component
+ * @property {Function} onImageClick - Callback when image option is clicked
+ * @property {Function} onTextFileClick - Callback when text file option is clicked
+ * @property {Function} onPdfClick - Callback when PDF option is clicked
+ * @property {boolean} supportsVision - Whether current model supports vision (enables/disables image option)
+ * @property {boolean} [disabled] - Whether the menu is disabled
+ */
 interface AttachmentMenuProps {
   onImageClick: () => void;
   onTextFileClick: () => void;
@@ -705,18 +840,6 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Menu items configuration
   const menuItems = [
     {
       icon: <ImagePlus size={14} />,
@@ -745,22 +868,26 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
     <div className="relative" ref={menuRef}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
         disabled={disabled}
         className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         title="添加附件"
         aria-label="添加附件"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
       >
         <Paperclip size={12} />
         <span>添加附件</span>
         <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+      <FloatingMenuPortal open={isOpen} anchorRef={menuRef} onClose={() => setIsOpen(false)} className="w-40">
+        <div className="rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
           {menuItems.map((item) => (
             <button
               key={item.label}
+              type="button"
+              role="menuitem"
               onClick={() => {
                 if (item.enabled) {
                   item.onClick();
@@ -768,9 +895,9 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
                 }
               }}
               disabled={!item.enabled}
-              className={`flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors ${item.enabled
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${item.enabled
                 ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                : 'cursor-not-allowed text-gray-400 dark:text-gray-600'
                 }`}
               title={!item.enabled ? item.disabledTip : undefined}
             >
@@ -784,7 +911,7 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
             </button>
           ))}
         </div>
-      )}
+      </FloatingMenuPortal>
     </div>
   );
 };
@@ -803,17 +930,6 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
   const menuItems = [
     {
       icon: <Copy size={14} />,
@@ -829,22 +945,26 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
     <div className="relative" ref={menuRef}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
         disabled={disabled}
         className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         title="更多操作"
         aria-label="更多操作"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
       >
         <FileIcon size={12} />
         <span>更多</span>
         <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
-        <div className="absolute bottom-full right-0 mb-1 w-40 bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50">
+      <FloatingMenuPortal open={isOpen} anchorRef={menuRef} align="right" onClose={() => setIsOpen(false)} className="w-40">
+        <div className="rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
           {menuItems.map((item) => (
             <button
               key={item.label}
+              type="button"
+              role="menuitem"
               onClick={() => {
                 if (item.enabled && item.onClick) {
                   item.onClick();
@@ -852,9 +972,9 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
                 }
               }}
               disabled={!item.enabled || disabled}
-              className={`flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors ${item.enabled && !disabled
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${item.enabled && !disabled
                 ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
-                : 'text-gray-400 dark:text-gray-600 cursor-not-allowed'
+                : 'cursor-not-allowed text-gray-400 dark:text-gray-600'
                 }`}
               title={!item.enabled ? item.disabledTip : undefined}
             >
@@ -868,7 +988,7 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
             </button>
           ))}
         </div>
-      )}
+      </FloatingMenuPortal>
     </div>
   );
 };
@@ -908,35 +1028,25 @@ function CompactSelector<T extends { label: string; value: string }>({
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Close dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  // Find current option label or use placeholder
-  const currentLabel = options.find(o => o.value === currentValue)?.label || placeholder;
+  const currentLabel = options.find((option) => option.value === currentValue)?.label || placeholder;
 
   return (
     <div className="relative" ref={dropdownRef}>
       <button
         type="button"
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((open) => !open)}
         disabled={disabled}
-        className="inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border border-gray-200 bg-gray-50 text-gray-600 hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        aria-haspopup="menu"
+        aria-expanded={isOpen}
+        className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
       >
         {icon}
         <span className="max-w-20 truncate">{currentLabel}</span>
         <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      {isOpen && (
-        <div className="absolute bottom-full left-0 mb-1 w-[18.667rem] bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 py-1 z-50 max-h-60 overflow-auto">
+      <FloatingMenuPortal open={isOpen} anchorRef={dropdownRef} onClose={() => setIsOpen(false)} className="w-[18.667rem]">
+        <div className="max-h-60 overflow-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
           {options.length === 0 ? (
             <div className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
               暂无可用选项
@@ -945,23 +1055,25 @@ function CompactSelector<T extends { label: string; value: string }>({
             options.map((option) => (
               <button
                 key={option.value}
+                type="button"
+                role="menuitem"
                 onClick={() => {
                   onSelect(option.value);
                   setIsOpen(false);
                 }}
-                className="flex items-center justify-between w-full px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                className="flex w-full items-center justify-between px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
               >
-                <span className="text-xs text-gray-800 dark:text-white truncate">
+                <span className="truncate text-xs text-gray-800 dark:text-white">
                   {option.label}
                 </span>
                 {option.value === currentValue && (
-                  <Check size={12} className="text-blue-500 flex-shrink-0" />
+                  <Check size={12} className="flex-shrink-0 text-blue-500" />
                 )}
               </button>
             ))
           )}
         </div>
-      )}
+      </FloatingMenuPortal>
     </div>
   );
 }

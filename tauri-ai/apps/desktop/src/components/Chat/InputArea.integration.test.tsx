@@ -218,6 +218,49 @@ describe('InputArea Text File Integration', () => {
       expect(textFileOption).toBeDefined();
     });
 
+    it('renders attachment menu in a body portal so scroll containers do not clip it', async () => {
+      render(
+        <InputArea
+          onSend={mockOnSend}
+          onAbort={mockOnAbort}
+          disabled={false}
+          isGenerating={false}
+        />
+      );
+
+      fireEvent.click(screen.getByTitle('添加附件'));
+
+      const menu = screen.getByRole('menu');
+      expect(menu.parentElement).toBe(document.body);
+      expect(screen.getByText('文本文件')).toBeDefined();
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      fireEvent.mouseDown(document.body);
+
+      await waitFor(() => {
+        expect(screen.queryByRole('menu')).toBeNull();
+      });
+    });
+
+    it('renders run mode options in a body portal so they stay visible inside the horizontal scroller', async () => {
+      render(
+        <InputArea
+          onSend={mockOnSend}
+          onAbort={mockOnAbort}
+          disabled={false}
+          isGenerating={false}
+          runMode="agent"
+          onRunModeChange={() => {}}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /Agent/i }));
+
+      const menu = screen.getByRole('menu');
+      expect(menu.parentElement).toBe(document.body);
+      expect(screen.getByText('Agent Full Access')).toBeDefined();
+    });
+
     it('has file input with supported extensions', () => {
       render(
         <InputArea
