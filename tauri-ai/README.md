@@ -1,19 +1,30 @@
 # TauriAI
 
-本项目使用 **Tauri（Rust 后端）+ React/TypeScript 前端**。
+TauriAI 是一个基于 Tauri、Rust、React 和 TypeScript 的多端 AI 工作台。
 
-为了长期维护与扩展（桌面/移动互不影响），前端按 `apps/desktop` 与 `apps/mobile` **物理隔离**，后端复用 `src-tauri`，并按平台裁剪桌面专用能力。
+这个仓库现在按职责拆成了 3 类可执行物：
+
+- `src-tauri/`：桌面主应用 `tauri-ai`
+- `crates/headless-runner/`：随主应用一起发布的 sidecar `tauri-ai-headless`
+- `crates/cli-runner/`：本地 CLI 工具 `tauri-ai-cli`
+
+这样做的目的很简单：
+
+- 主应用包只负责桌面 App 本体
+- sidecar 继续参与发布，但只通过 `externalBin` 进入安装包
+- CLI 和 headless 不再作为主应用包的额外 `bin` 被重复打包
 
 ## 目录结构
 
-- `apps/desktop/`：桌面端 UI（当前桌面主入口）
-- `apps/mobile/`：移动端 UI（独立构建，供 Android/iOS 使用）
-- `src-tauri/`：Rust 后端与 Tauri 配置
-  - `src-tauri/tauri.conf.json`：桌面端配置（`frontendDist=../dist/desktop`）
-  - `src-tauri/tauri.android.conf.json`：Android 配置（`frontendDist=../dist/mobile`）
-  - `src-tauri/tauri.ios.conf.json`：iOS 配置（`frontendDist=../dist/mobile`）
+- `apps/desktop/`：桌面端前端
+- `apps/mobile/`：移动端前端
+- `apps/common/`：桌面/移动共享前端逻辑
+- `src-tauri/`：Tauri 主应用与共享 Rust 库
+- `crates/headless-runner/`：headless sidecar crate
+- `crates/cli-runner/`：CLI crate
+- `scripts/prepare-headless-sidecar.mjs`：构建并分发 sidecar 到 `src-tauri/binaries/`
 
-## 桌面端开发 / 构建（必须保持可用）
+## 桌面开发
 
 在 `tauri-ai/` 目录执行：
 
@@ -21,105 +32,60 @@
 - `npm run tauri dev`
 - `npm run tauri build`
 
-## 移动端（Android / iOS）
+说明：
 
-移动端使用 `apps/mobile`，后端仍为 `src-tauri`（移动端会禁用 tray/pty/mcp/数据库等桌面专用模块，保证可编译可打包）。
+- `npm run tauri dev` 会先执行 `prepare:headless`
+- 这个步骤会单独编译 `tauri-ai-headless`，然后再启动前端 dev server
+- 发布时 sidecar 通过 `src-tauri/tauri.*.conf.json` 里的 `externalBin` 一起进入安装包
 
-### Android
+## 移动端
 
-- 初始化工程：`npm run android:init`
-- 构建 APK（示例）：`npm run android:build`
+移动端前端在 `apps/mobile/`，仍然复用 `src-tauri/` 的 Rust 代码，但会按平台裁剪掉桌面专用能力。
 
-macOS 上如果系统 `java` 不可用，需要设置 `JAVA_HOME` / `PATH` 指向已安装的 JDK（建议 JDK 21）。
+常用命令：
 
-### iOS
+- `npm run dev:mobile`
+- `npm run build:mobile`
+- `npm run android:init`
+- `npm run android:build`
+- `npm run ios:sim:build`
 
-- 初始化工程：`npx tauri ios init`
-- 构建 Simulator（示例）：`npx tauri ios build -d -t aarch64-sim`
-- 一键安装到模拟器（默认 iPhone 17）：`npm run ios:sim:install`
-  - 指定设备示例：`IOS_SIM_DEVICE="iPad (A16)" npm run ios:sim:install`
-- 同步配置到模拟器（优先用 `~/.tauriai/config.json`，否则用 `~/.tauri-ai/config.json`）：`npm run ios:sim:sync-config`
+## Headless Sidecar
 
-如果遇到 `swiftCompatibility*` 链接失败（常见于 Xcode 26 工具链路径指向 MetalToolchain），运行：
+`tauri-ai-headless` 是主应用发布物的一部分，但它以 sidecar 身份发布，而不是主应用包里的额外 `bin`。
 
-- `npm run patch:ios-gen`
+在仓库根目录可以这样运行：
 
-## Headless 子进程模式
+- 纯文本输出：
+  - `cargo run -p tauri-ai-headless -- --prompt "解释这个函数的作用"`
+- JSONL 事件流：
+  - `echo '{"task":{"content":"解释这个函数的作用"},"output":{"mode":"jsonl"}}' | cargo run -p tauri-ai-headless`
+- 最终 JSON：
+  - `cargo run -p tauri-ai-headless -- --request-file request.json --output-mode final_json`
 
-在 `src-tauri` 目录可使用独立二进制 `tauri-ai-headless` 执行 Agent 任务（支持工具调用、会话续跑、结构化输出）：
+协议文档：
 
-- 纯文本模式（默认，仅输出最终 assistant 内容）  
-  - `cargo run --bin tauri-ai-headless -- --prompt "解释这个函数的作用"`
-- JSONL 事件流模式（每条 `run:event` + 最后一条 `final`）  
-  - `echo '{"task":{"content":"解释这个函数的作用"},"output":{"mode":"jsonl"}}' | cargo run --bin tauri-ai-headless`
-- 最终 JSON 模式（单条结果对象）  
-  - `cargo run --bin tauri-ai-headless -- --request-file request.json --output-mode final_json`
+- `docs/headless/request.schema.json`
+- `docs/headless/response.schema.json`
 
-### 请求结构（camelCase）
+## CLI
 
-```json
-{
-  "requestId": "可选",
-  "task": {
-    "messageId": "可选（建议传入主线程 user message id）",
-    "content": "用户输入",
-    "contentParts": [],
-    "agentName": "可选",
-    "modelRef": "可选",
-    "runMode": "chat|agent|agent-custom|agent-full-access",
-    "thinking": "可选",
-    "webSearchProvider": "可选",
-    "debugMode": true
-  },
-  "session": {
-    "backend": "db|memory",
-    "mode": "new|resume",
-    "conversationId": "可选（resume 推荐）",
-    "dbPath": "可选（backend=db 时）",
-    "title": "可选",
-    "messages": []
-  },
-  "output": {
-    "mode": "plain|final_json|jsonl",
-    "includeEvents": false,
-    "includeMessages": false,
-    "expectedResultSchema": {}
-  },
-  "runtime": {
-    "timeoutMs": 600000,
-    "maxEvents": 5000,
-    "maxSnapshotMessages": 1000
-  }
-}
-```
+NPM 脚本已经改为指向独立 CLI crate：
 
-完整契约（JSON Schema）：
+- `npm run cli:tui`
+- `npm run cli:repl`
+- `npm run cli:sessions`
 
-- 请求：`docs/headless/request.schema.json`
-- 响应：`docs/headless/response.schema.json`
+如果直接用 Cargo：
 
-### 会话语义
+- `cargo run --manifest-path crates/cli-runner/Cargo.toml -- chat --tui`
+- `cargo run --manifest-path crates/cli-runner/Cargo.toml -- chat --repl`
+- `cargo run --manifest-path crates/cli-runner/Cargo.toml -- sessions`
 
-- `backend=db`：使用 SQLite 持久化会话（默认 `~/.tauri-ai/data.db`）。
-- `backend=memory`：进程内内存会话；返回结果里会附带 `sessionRef.snapshot`，可用于下次 `resume`。
-- `mode=new`：创建新会话（可导入 `session.messages` 作为初始历史）。
-- `mode=resume`：续跑已有会话；若会话不存在，必须提供 `session.messages`（或 `snapshot.messages`）用于重建。
+## Workspace 说明
 
-### 输出语义
+仓库根的 `Cargo.toml` 现在包含多个 workspace member，但默认 member 仍然只有主应用包：
 
-- 成功/失败都会输出统一结构，核心字段：`ok`、`requestId`、`runId`、`sessionRef`、`result`、`usage`、`error`。
-- 所有输出都会附带 `eventStats`（`totalReceived/kept/dropped`），用于判断事件是否被上限裁剪。
-- 配置 `output.expectedResultSchema` 时，会对 assistant 最终内容做 JSON 校验，并在 `schemaValidation` 返回校验结果。
+- `tauri-ai/src-tauri`
 
-### 运行时保护（建议）
-
-- `runtime.timeoutMs`：单任务超时（默认 600000ms，超时后会触发 abort 并返回 `runtime_timeout`）。
-- `runtime.maxEvents`：事件缓存上限（默认 5000，超出后丢弃最旧事件，`eventStats.dropped` 可观测）。
-- `runtime.maxSnapshotMessages`：snapshot 消息上限（默认 1000，返回时仅保留最新 N 条）。
-
-### 父进程调用约定（推荐）
-
-- 使用稳定 `requestId` 做请求追踪（日志与错误定位统一）。
-- 若已有会话消息主键，建议同时传 `task.messageId`，确保和主线程落库主键一致。
-- 对同一会话建议“串行请求 + 上层幂等去重”（避免并发写入导致上下文竞态）。
-- 失败重试只建议用于 `transport/http/protocol` 层，`content/tool/db` 层先排查再重试。
+这保证了从仓库根直接执行 `cargo build` 时，默认行为仍然聚焦主应用，不会把 CLI 和 headless 一起当成主包产物处理。

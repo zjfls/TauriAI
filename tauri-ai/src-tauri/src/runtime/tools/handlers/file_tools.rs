@@ -23,7 +23,8 @@ const TAB_WIDTH: usize = 4;
 const COMMENT_PREFIXES: &[&str] = &["#", "//", "--"];
 const MAX_RG_LIMIT: usize = 2000;
 const DEFAULT_RG_LIMIT: usize = 100;
-const DEFAULT_READ_LIMIT: usize = 2000;
+const MAX_READ_LIMIT: usize = 400;
+const DEFAULT_READ_LIMIT: usize = MAX_READ_LIMIT;
 const DEFAULT_LIST_LIMIT: usize = 25;
 const DEFAULT_LIST_DEPTH: usize = 2;
 const DIR_INDENT_SPACES: usize = 2;
@@ -171,13 +172,16 @@ impl ToolHandler for ReadFileTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read_file".to_string(),
-            description: Some("读取本地文件并返回带行号的文本片段".to_string()),
+            description: Some(format!(
+                "读取本地文件并返回带行号的文本片段（单次最多 {} 行）",
+                MAX_READ_LIMIT
+            )),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "file_path": { "type": "string", "description": "文件路径（绝对或相对）" },
                     "offset": { "type": "integer", "description": "起始行号（1 开始，默认 1）" },
-                    "limit": { "type": "integer", "description": "最大返回行数（默认 2000）" },
+                    "limit": { "type": "integer", "description": format!("最大返回行数（默认 {}，最大 {}；超出会直接报错）", DEFAULT_READ_LIMIT, MAX_READ_LIMIT) },
                     "mode": { "type": "string", "description": "读取模式：slice（默认）或 indentation" },
                     "indentation": {
                         "type": "object",
@@ -187,7 +191,7 @@ impl ToolHandler for ReadFileTool {
                             "max_levels": { "type": "integer", "description": "向上扩展的缩进层级（0 表示不限制）" },
                             "include_siblings": { "type": "boolean", "description": "是否包含同层级兄弟块" },
                             "include_header": { "type": "boolean", "description": "是否包含锚点上方注释/标注" },
-                            "max_lines": { "type": "integer", "description": "indentation 模式的硬性最大行数" }
+                            "max_lines": { "type": "integer", "description": format!("indentation 模式的硬性最大行数（最大 {}；超出会直接报错）", MAX_READ_LIMIT) }
                         },
                         "additionalProperties": false
                     }
@@ -215,7 +219,14 @@ impl ToolHandler for ReadFileTool {
             return Err(ToolError::invalid("offset 必须从 1 开始"));
         }
         if args.limit == 0 {
-            return Err(ToolError::invalid("limit 必须大于 0"));
+            return Err(ToolError::invalid("read_file.limit 必须大于 0"));
+        }
+
+        if args.limit > MAX_READ_LIMIT {
+            return Err(ToolError::invalid(format!(
+                "read_file 单次最多读取 {} 行。请将 limit 调整到 {} 以内，或改用 rg 先定位后分块读取。",
+                MAX_READ_LIMIT, MAX_READ_LIMIT
+            )));
         }
 
         let path = resolve_path(ctx, &args.file_path)?;
@@ -473,9 +484,23 @@ async fn read_block_with_numbers(
         return Err(ToolError::invalid("anchor_line 必须从 1 开始"));
     }
 
+    if let Some(max_lines) = options.max_lines {
+        if max_lines == 0 {
+            return Err(ToolError::invalid(
+                "read_file.indentation.max_lines 必须大于 0",
+            ));
+        }
+        if max_lines > MAX_READ_LIMIT {
+            return Err(ToolError::invalid(format!(
+                "read_file.indentation.max_lines 最大为 {} 行。请缩小范围，或改用 rg 先定位后分块读取。",
+                MAX_READ_LIMIT
+            )));
+        }
+    }
+
     let guard_limit = options.max_lines.unwrap_or(limit);
     if guard_limit == 0 {
-        return Err(ToolError::invalid("max_lines 必须大于 0"));
+        return Err(ToolError::invalid("read_file.indentation.max_lines 必须大于 0"));
     }
 
     let collected = collect_file_lines(path).await?;

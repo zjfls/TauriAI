@@ -1,3 +1,8 @@
 [workspace]
-members = ["tauri-ai/src-tauri"]
+members = [
+  "tauri-ai/src-tauri",
+  "tauri-ai/crates/headless-runner",
+  "tauri-ai/crates/cli-runner",
+]
+default-members = ["tauri-ai/src-tauri"]
 resolver = "2"

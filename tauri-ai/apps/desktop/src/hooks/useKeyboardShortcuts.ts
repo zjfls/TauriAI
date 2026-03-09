@@ -13,6 +13,7 @@ import { useWindowLayoutStore } from '../stores/windowLayoutStore';
 import { markChatOpenProfile, startChatOpenProfile } from '../utils/chatOpenProfile';
 import { closeAllWorkstudioWindows, openOrFocusWorkstudioWindow } from '../utils/viewWindow';
 import { openPracticeWindow, openPracticeWorkspaceTab } from '../utils/practiceWorkspaceTab';
+import { confirmClearConversation } from '../utils/sessionDialogs';
 import { detectShortcutPlatform, eventToKeybindingString, isEditableElement, normalizeKeybindingString } from '../shortcuts';
 import { SHORTCUT_ACTIONS } from '../shortcuts/registry';
 import type { AgentSession, AppConfig, Workstudio } from '../types';
@@ -306,6 +307,16 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     }
   }, []);
 
+  const reportClearFailure = useCallback((reason: string) => {
+    try {
+      if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+        window.alert(`\u6e05\u7a7a\u5f53\u524d\u4f1a\u8bdd\u5931\u8d25\uff1a${reason}`);
+      }
+    } catch {
+      // ignore UI errors
+    }
+  }, []);
+
   const dispatchShortcutEvent = useCallback((actionId: string) => {
     try {
       window.dispatchEvent(new CustomEvent('tauri-ai:shortcut', { detail: { action: actionId } }));
@@ -387,6 +398,37 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
             const message = e instanceof Error ? e.message : String(e);
             console.error('Failed to clone conversation:', e);
             reportCloneFailure(message || '未知错误');
+            return false;
+          }
+        }
+        case 'session.clear': {
+          const activeView = useUIStore.getState().activeView;
+          if (activeView !== 'chat') {
+            reportClearFailure('\u5f53\u524d\u4e0d\u5728\u804a\u5929\u89c6\u56fe');
+            return false;
+          }
+          const state = useSessionStore.getState();
+          const activeSessionId = state.activeSessionId;
+          if (!activeSessionId) {
+            reportClearFailure('\u5f53\u524d\u6ca1\u6709\u53ef\u6e05\u7a7a\u7684\u4f1a\u8bdd');
+            return false;
+          }
+          const session = state.sessions.get(activeSessionId);
+          if (!session?.conversationId) {
+            reportClearFailure('\u5f53\u524d\u4f1a\u8bdd\u4e0d\u652f\u6301\u6e05\u7a7a');
+            return false;
+          }
+
+          const shouldClear = await confirmClearConversation(session.title);
+          if (!shouldClear) return false;
+
+          try {
+            await useSessionStore.getState().clearConversation(activeSessionId);
+            return true;
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            console.error('Failed to clear conversation:', e);
+            reportClearFailure(message || '\u672a\u77e5\u9519\u8bef');
             return false;
           }
         }
@@ -504,6 +546,7 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       handlePreviousSession,
       openPracticeWindow,
       openWorkstudioFromActiveSession,
+      reportClearFailure,
       reportCloneFailure,
     ]
   );
@@ -612,6 +655,8 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
           return useUIStore.getState().activeView === 'chat';
         case 'chat.openWorkstudio':
           return useUIStore.getState().activeView !== 'workstudio';
+        case 'session.clear':
+          return useUIStore.getState().activeView === 'chat';
         default:
           return true;
       }

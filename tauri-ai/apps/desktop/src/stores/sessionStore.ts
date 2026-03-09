@@ -555,6 +555,7 @@ export interface SessionState {
   ) => Promise<string>;
   /** 克隆当前会话对应的对话，并在同一 Pane 新建一个 tab 打开 */
   cloneConversation: (sessionId: string) => Promise<string>;
+  clearConversation: (sessionId: string) => Promise<void>;
 
   // Getters
   getActiveSession: () => AgentSession | undefined;
@@ -3119,6 +3120,68 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     return newSessionId;
+  },
+
+  clearConversation: async (sessionId: string) => {
+    const current = get().sessions.get(sessionId);
+    if (!current?.conversationId) {
+      throw new Error('褰撳墠浼氳瘽鏈粦瀹氬璇濓紝鏃犳硶娓呯┖');
+    }
+
+    if (current.isGenerating) {
+      await get().abortGeneration(sessionId);
+    }
+
+    const session = get().sessions.get(sessionId);
+    if (!session?.conversationId) {
+      throw new Error('褰撳墠浼氳瘽鏈粦瀹氬璇濓紝鏃犳硶娓呯┖');
+    }
+
+    const conversationId = session.conversationId;
+    const firstMessageId = session.messages[0]?.id ?? null;
+    const nextTitle = buildDefaultSessionTitle();
+
+    if (firstMessageId) {
+      await invoke('delete_messages_from', {
+        conversationId,
+        messageId: firstMessageId,
+      });
+    }
+
+    const { useConversationStore } = await import('./conversationStore');
+    await useConversationStore.getState().updateConversationTitle(conversationId, nextTitle);
+    await useConversationStore.getState().loadConversations();
+
+    clearPendingChunks(sessionId);
+    clearTurnIndexesForSession(sessionId);
+
+    set((state) => {
+      const newSessions = new Map(state.sessions);
+      const target = newSessions.get(sessionId);
+      if (!target) return state;
+
+      newSessions.set(sessionId, {
+        ...target,
+        title: nextTitle,
+        draftContent: '',
+        draftWorkspaceMentions: [],
+        draftCodeSnippets: [],
+        messages: [],
+        queuedMessages: [],
+        streamingBlocks: null,
+        streamingTurns: undefined,
+        streamingAssistantMessageId: null,
+        isGenerating: false,
+        error: null,
+        hasUnreadCompletion: false,
+        unreadCompletionMessageId: null,
+        lastActiveAt: new Date().toISOString(),
+      });
+
+      return { sessions: newSessions };
+    });
+
+    await get().saveSessionState();
   },
 }));
 

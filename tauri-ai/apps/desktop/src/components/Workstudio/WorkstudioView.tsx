@@ -6350,6 +6350,7 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       lines.push(
         '',
         '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+        'read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。',
       );
       return lines.join('\n');
     },
@@ -6402,7 +6403,8 @@ export const WorkstudioView: React.FC<{ workstudioId?: string | null }> = ({ wor
       '',
       '4) “关键结论/证据”必须带文件引用，格式：`path#L行C列` 或 `path:行:列`（优先相对 workstudio 根目录）。',
       '',
-      '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+        '你可以在需要时调用工具（read_file / list_dir / rg / web_search）来补齐上下文，但不要修改文件。',
+        'read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。',
     ];
     return lines.join('\n');
   }, []);

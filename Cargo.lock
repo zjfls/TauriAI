@@ -5047,6 +5047,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "tauri-ai-cli"
+version = "0.1.0"
+dependencies = [
+ "tauri-ai",
+ "tokio",
+]
+
+[[package]]
+name = "tauri-ai-headless"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "dirs 5.0.1",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "tauri-ai",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tauri-build"
 version = "2.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

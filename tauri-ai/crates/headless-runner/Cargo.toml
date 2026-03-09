@@ -1,0 +1,16 @@
+[package]
+name = "tauri-ai-headless"
+version = "0.1.0"
+description = "TauriAI headless sidecar runner"
+edition = "2021"
+publish = false
+
+[dependencies]
+tauri_ai_lib = { path = "../../src-tauri", package = "tauri-ai" }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+jsonschema = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4", "serde"] }

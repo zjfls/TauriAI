@@ -8,7 +8,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/shallow';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { Folder, ChevronDown, Shield, ListOrdered, ArrowUp, ArrowDown, Pencil, Trash2, Check, X, Code2, ExternalLink, Terminal } from 'lucide-react';
 import {
   clearSessionStreamViewerVisibility,
@@ -49,6 +49,7 @@ import { WorkstudioSecurityModal } from './WorkstudioSecurityModal';
 import type { WebSearchProvider } from './WebSearchToggle';
 import { ChatOutlinePanel, type ChatOutlineDisplayMode, type ChatOutlineItem } from './ChatOutlinePanel';
 import { stripAnsi } from '../../utils/stripAnsi';
+import { confirmClearConversation } from '../../utils/sessionDialogs';
 
 interface ChatViewProps {
   sessionId: string | null;
@@ -109,6 +110,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     retry: retryMessage,
     retryTurn,
     cloneConversation,
+    clearConversation,
     setSessionModel,
     undoToMessage,
     moveQueuedMessage,
@@ -128,6 +130,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       retry: state.retry,
       retryTurn: state.retryTurn,
       cloneConversation: state.cloneConversation,
+      clearConversation: state.clearConversation,
       setSessionModel: state.setSessionModel,
       undoToMessage: state.undoToMessage,
       moveQueuedMessage: state.moveQueuedMessage,
@@ -686,189 +689,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (!isExternalAgentSession || !agentName) return null;
     return getExternalAgent(session?.externalAgentName || agentName) ?? null;
   }, [agentName, getExternalAgent, isExternalAgentSession, session?.externalAgentName]);
-
-  // Determine if export should be shown based on format type (richtext)
-  const canExportChat = useMemo(() => {
-    if (!agentName) return false;
-    const agent = getAgent(agentName);
-    // Only 'chat' format (richtext) supports export
-    return agent?.formatType === 'chat';
-  }, [agentName, getAgent]);
-
-  // Export chat to .tauri.richtxt
-  const [exporting, setExporting] = useState(false);
-
-  const buildRichTxtMarkdown = useCallback((sessionData: typeof session): string => {
-    if (!sessionData) return '';
-
-    const lines: string[] = [];
-    const exportedAt = new Date().toISOString();
-    const title = sessionData.title?.trim() || '对话导出';
-
-    const roleLabel = (role: Message['role']) => {
-      if (role === 'user') return '用户';
-      if (role === 'assistant') return '助手';
-      if (role === 'system') return '系统';
-      if (role === 'error') return '错误';
-      return String(role);
-    };
-
-    const renderBlock = (block: MessageBlock) => {
-      switch (block.type) {
-        case 'text': {
-          const format = (block.format || 'markdown').toString().toLowerCase();
-          if (format === 'json') {
-            lines.push('```json');
-            lines.push(block.text ?? '');
-            lines.push('```');
-            return;
-          }
-          if (format === 'plain') {
-            lines.push('```text');
-            lines.push(block.text ?? '');
-            lines.push('```');
-            return;
-          }
-          lines.push(block.text ?? '');
-          return;
-        }
-        case 'thinking': {
-          lines.push('<details><summary>思考</summary>');
-          lines.push('');
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          lines.push('');
-          lines.push('</details>');
-          return;
-        }
-        case 'tool_call': {
-          lines.push(`**工具调用**：\`${block.name}\``);
-          lines.push('```json');
-          lines.push(block.arguments ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'tool_result': {
-          lines.push(`**工具结果**：\`${block.callId}\``);
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'approval': {
-          lines.push(`**审批**：\`${block.toolName}\`（${block.status}）`);
-          lines.push('```json');
-          lines.push(
-            JSON.stringify(
-              {
-                requestId: block.requestId,
-                callId: block.callId,
-                toolName: block.toolName,
-                status: block.status,
-                escalated: block.escalated,
-                reason: block.reason,
-              },
-              null,
-              2
-            )
-          );
-          lines.push('```');
-          return;
-        }
-        case 'error': {
-          lines.push('**错误**');
-          lines.push('```text');
-          lines.push(block.text ?? '');
-          lines.push('```');
-          return;
-        }
-        case 'web_search': {
-          lines.push(`**WebSearch**：\`${block.status}\``);
-          lines.push('```json');
-          lines.push(JSON.stringify(block.action ?? null, null, 2));
-          lines.push('```');
-          return;
-        }
-        case 'unknown': {
-          lines.push('**未知块**');
-          lines.push('```json');
-          lines.push(JSON.stringify(block.data ?? null, null, 2));
-          lines.push('```');
-          return;
-        }
-        default: {
-          lines.push('**未知块**');
-          lines.push('```json');
-          lines.push(JSON.stringify(block as never, null, 2));
-          lines.push('```');
-        }
-      }
-    };
-
-    lines.push(`<!-- tauri.richtxt v1 | exportedAt=${exportedAt} | conversationId=${sessionData.conversationId ?? ''} -->`);
-    lines.push('');
-    lines.push(`# ${title}`);
-    lines.push('');
-    lines.push(`- 导出时间：\`${exportedAt}\``);
-    lines.push(`- 智能体：\`${sessionData.agentName}\``);
-    if (sessionData.modelRef) lines.push(`- 模型：\`${sessionData.modelRef}\``);
-    if (sessionData.conversationId) lines.push(`- Conversation ID：\`${sessionData.conversationId}\``);
-    lines.push('');
-    lines.push('---');
-    lines.push('');
-
-    for (const msg of sessionData.messages) {
-      const when = msg.createdAt ? ` · ${msg.createdAt}` : '';
-      lines.push(`## ${roleLabel(msg.role)}${when}`);
-      lines.push('');
-
-      const blocks = msg.blocks ?? [];
-      if (blocks.length > 0) {
-        for (const b of blocks) {
-          renderBlock(b);
-          lines.push('');
-        }
-      } else {
-        if (msg.thinking?.trim()) {
-          lines.push('<details><summary>思考</summary>');
-          lines.push('');
-          lines.push('```text');
-          lines.push(msg.thinking);
-          lines.push('```');
-          lines.push('');
-          lines.push('</details>');
-          lines.push('');
-        }
-        if (msg.content?.trim()) {
-          lines.push(msg.content);
-          lines.push('');
-        }
-      }
-    }
-
-    return lines.join('\n').trim() + '\n';
-  }, []);
-
-  const handleExportChat = useCallback(async () => {
-    if (!session || !session.conversationId) return;
-    try {
-      setExporting(true);
-      const suggested = `${(session.title || 'chat').replace(/[\\/:*?"<>|]/g, '_')}.tauri.richtxt`;
-      const picked = await saveDialog({
-        title: '导出 .tauri.richtxt',
-        defaultPath: suggested,
-      });
-      if (!picked) return;
-      const path = picked.toLowerCase().endsWith('.tauri.richtxt') ? picked : `${picked}.tauri.richtxt`;
-      const content = buildRichTxtMarkdown(session);
-      await invoke('write_local_text_file', { path, content });
-    } catch (e) {
-      alert(String(e));
-    } finally {
-      setExporting(false);
-    }
-  }, [session, buildRichTxtMarkdown]);
 
   useEffect(() => {
     setWorkstudioMenuOpen(false);
@@ -1602,6 +1422,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
     await abortGeneration(sessionId);
   };
 
+  const handleClearConversation = useCallback(async () => {
+    if (!sessionId || !conversationId) return;
+
+    const shouldClear = await confirmClearConversation(session?.title);
+    if (!shouldClear) return;
+
+    try {
+      await clearConversation(sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('clearConversation failed:', err);
+      alert(`\u6e05\u7a7a\u5f53\u524d\u4f1a\u8bdd\u5931\u8d25\uff1a${message}`);
+    }
+  }, [clearConversation, conversationId, session?.title, sessionId]);
+
   const handleAction = useCallback(async (action: import('../../types').Action) => {
     switch (action.action_type) {
       case 'copy':
@@ -1718,7 +1553,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       onWheelCapture={maybeAcknowledgeUnreadCompletion}
       onKeyDownCapture={maybeAcknowledgeUnreadCompletion}
     >
-      {(persistanceShellEnhance || Boolean(conversationId) || workspaceEnabled || (canExportChat && session)) && (
+      {(persistanceShellEnhance || Boolean(conversationId) || workspaceEnabled) && (
         <div className="flex items-center justify-between gap-3 border-b border-gray-100 px-4 py-2 text-xs text-gray-500 dark:border-gray-800 dark:text-gray-400">
           <div className="flex min-w-0 items-center gap-2">
             {persistanceShellEnhance && (
@@ -1840,34 +1675,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 </button>
               )}
             </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            {canExportChat && session && (
-              <button
-                type="button"
-                disabled={exporting || !session.conversationId || session.messages.length === 0}
-                onClick={handleExportChat}
-                className="flex items-center gap-1.5 rounded border border-gray-200 px-2 py-1 text-xs text-gray-600 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                title={!session.conversationId ? '对话未绑定' : session.messages.length === 0 ? '暂无消息' : '导出对话为 .tauri.richtxt'}
-              >
-                <svg
-                  width="14"
-                  height="14"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="7 10 12 15 17 10" />
-                  <line x1="12" y1="15" x2="12" y2="3" />
-                </svg>
-                <span>{exporting ? '导出中...' : '导出'}</span>
-              </button>
-            )}
           </div>
         </div>
       )}
@@ -2131,6 +1938,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }
             : undefined
         }
+        onClearConversation={conversationId ? handleClearConversation : undefined}
         disabled={false}
         isGenerating={isGenerating}
         queuedCount={queuedMessages.length}

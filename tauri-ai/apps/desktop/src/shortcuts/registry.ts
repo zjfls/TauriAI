@@ -69,6 +69,15 @@ export const SHORTCUT_ACTIONS: ShortcutActionDefinition[] = [
     allowWhenTyping: true,
   },
   {
+    id: 'session.clear',
+    title: '\u6e05\u7a7a\u5f53\u524d\u4f1a\u8bdd',
+    description: '\u6e05\u7a7a\u5f53\u524d\u4f1a\u8bdd\u7684\u6d88\u606f\u548c\u8349\u7a3f\uff0c\u4f46\u4fdd\u7559\u5f53\u524d tab',
+    category: '\u4f1a\u8bdd',
+    defaultMac: 'Cmd+Shift+Backspace',
+    defaultWindows: 'Ctrl+Shift+Backspace',
+    allowWhenTyping: true,
+  },
+  {
     id: 'session.close',
     title: '关闭当前会话',
     description: '关闭当前激活会话（类似关闭标签页）',

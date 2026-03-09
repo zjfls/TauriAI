@@ -500,6 +500,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             &[
                 &open_practice,
                 &open_settings,
+                &reset_main_window,
                 &view_settings_separator,
                 &open_web_tab,
                 &open_terminal_tab,

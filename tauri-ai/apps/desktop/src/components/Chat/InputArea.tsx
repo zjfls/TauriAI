@@ -6,7 +6,7 @@
 
 import React, { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy, GitBranch, Loader2, Plus } from 'lucide-react';
+import { Send, Square, Bot, Cpu, ChevronDown, Check, ImagePlus, Paperclip, FileText, Plug, File as FileIcon, Copy, GitBranch, Loader2, MessageSquare, Plus, ShieldCheck, SlidersHorizontal, Trash2, type LucideIcon } from 'lucide-react';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { McpModal } from './McpModal';
 import { AttachmentPreview } from './AttachmentPreview';
@@ -44,11 +44,11 @@ import { SHORTCUT_ACTIONS, detectShortcutPlatform, normalizeKeybindingString } f
 const MIN_TEXTAREA_HEIGHT = 40; // Minimum height in pixels
 const MAX_TEXTAREA_HEIGHT = 200; // Maximum height in pixels (Requirement 4.1)
 
-const RUN_MODE_OPTIONS: { value: RunMode; label: string }[] = [
-  { value: 'chat', label: 'Chat' },
-  { value: 'agent', label: 'Agent' },
-  { value: 'agent-full-access', label: 'Agent Full Access' },
-  { value: 'agent-custom', label: 'Custom' },
+const RUN_MODE_OPTIONS: { value: RunMode; label: string; shortLabel: string; icon: LucideIcon }[] = [
+  { value: 'chat', label: 'Chat', shortLabel: 'Chat', icon: MessageSquare },
+  { value: 'agent', label: 'Agent', shortLabel: 'Agent', icon: Bot },
+  { value: 'agent-full-access', label: 'Agent Full Access', shortLabel: 'Full Access', icon: ShieldCheck },
+  { value: 'agent-custom', label: 'Custom', shortLabel: 'Custom', icon: SlidersHorizontal },
 ];
 
 /**
@@ -411,6 +411,8 @@ interface ModelOption {
   value: string;
 }
 
+type ExtraActionHandler = () => void | Promise<void>;
+
 /**
  * Props for InputArea component
  * 
@@ -435,7 +437,8 @@ interface ModelOption {
 interface InputAreaProps {
   onSend: (content: string, thinking?: ThinkingMode, images?: ContentPart[]) => void;
   onAbort?: () => void;
-  onCloneConversation?: () => void;
+  onCloneConversation?: ExtraActionHandler;
+  onClearConversation?: ExtraActionHandler;
   disabled: boolean;
   isGenerating: boolean;
   queuedCount?: number;
@@ -917,18 +920,38 @@ const AttachmentMenu: React.FC<AttachmentMenuProps> = ({
 };
 
 interface ExtraActionsMenuProps {
-  onCloneConversation?: () => void;
+  onCloneConversation?: ExtraActionHandler;
+  onClearConversation?: ExtraActionHandler;
   cloneConversationShortcutLabel?: string | null;
+  clearConversationShortcutLabel?: string | null;
   disabled?: boolean;
 }
 
 const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
   onCloneConversation,
+  onClearConversation,
   cloneConversationShortcutLabel,
+  clearConversationShortcutLabel,
   disabled = false,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [isProcessingAction, setIsProcessingAction] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const handleMenuItemClick = useCallback(
+    async (onClick?: ExtraActionHandler, enabled: boolean = false) => {
+      if (!enabled || !onClick || isProcessingAction) return;
+
+      setIsProcessingAction(true);
+      try {
+        await onClick();
+      } finally {
+        setIsProcessingAction(false);
+        setIsOpen(false);
+      }
+    },
+    [isProcessingAction]
+  );
 
   const menuItems = [
     {
@@ -939,6 +962,14 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
       disabledTip: '当前对话不可克隆',
       shortcut: cloneConversationShortcutLabel ?? null,
     },
+    {
+      icon: <Trash2 size={14} />,
+      label: '清空会话',
+      onClick: onClearConversation,
+      enabled: typeof onClearConversation === 'function',
+      disabledTip: '当前会话不可清空',
+      shortcut: clearConversationShortcutLabel ?? null,
+    },
   ];
 
   return (
@@ -946,7 +977,7 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
       <button
         type="button"
         onClick={() => setIsOpen((open) => !open)}
-        disabled={disabled}
+        disabled={disabled || isProcessingAction}
         className="inline-flex items-center gap-1 text-gray-400 hover:text-blue-500 dark:text-gray-500 dark:hover:text-blue-400 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
         title="更多操作"
         aria-label="更多操作"
@@ -958,7 +989,7 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
         <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
-      <FloatingMenuPortal open={isOpen} anchorRef={menuRef} align="right" onClose={() => setIsOpen(false)} className="w-40">
+      <FloatingMenuPortal open={isOpen} anchorRef={menuRef} align="right" onClose={() => setIsOpen(false)} className="w-64">
         <div className="rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800">
           {menuItems.map((item) => (
             <button
@@ -966,20 +997,17 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
               type="button"
               role="menuitem"
               onClick={() => {
-                if (item.enabled && item.onClick) {
-                  item.onClick();
-                  setIsOpen(false);
-                }
+                void handleMenuItemClick(item.onClick, item.enabled);
               }}
-              disabled={!item.enabled || disabled}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${item.enabled && !disabled
+              disabled={!item.enabled || disabled || isProcessingAction}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${item.enabled && !disabled && !isProcessingAction
                 ? 'text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
                 : 'cursor-not-allowed text-gray-400 dark:text-gray-600'
                 }`}
               title={!item.enabled ? item.disabledTip : undefined}
             >
               {item.icon}
-              <span className="text-xs">{item.label}</span>
+              <span className="whitespace-nowrap text-xs">{item.label}</span>
               {item.shortcut ? (
                 <span className="ml-auto rounded border border-gray-200 bg-white/60 px-1.5 py-0.5 text-[10px] font-mono text-gray-500 dark:border-gray-700 dark:bg-black/20 dark:text-gray-400">
                   {item.shortcut}
@@ -1009,12 +1037,16 @@ const ExtraActionsMenu: React.FC<ExtraActionsMenuProps> = ({
  * @property {string} [placeholder] - Placeholder text when no option is selected
  */
 interface CompactSelectorProps<T extends { label: string; value: string }> {
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   options: T[];
   currentValue: string;
   onSelect: (value: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  buttonTitle?: string;
+  buttonClassName?: string;
+  renderCurrent?: (option: T | undefined, label: string) => React.ReactNode;
+  renderOption?: (option: T, isSelected: boolean) => React.ReactNode;
 }
 
 function CompactSelector<T extends { label: string; value: string }>({
@@ -1022,13 +1054,26 @@ function CompactSelector<T extends { label: string; value: string }>({
   options,
   currentValue,
   onSelect,
+  buttonTitle,
+  buttonClassName,
+  renderCurrent,
+  renderOption,
   disabled = false,
   placeholder = '选择',
 }: CompactSelectorProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  const currentLabel = options.find((option) => option.value === currentValue)?.label || placeholder;
+  const currentOption = options.find((option) => option.value === currentValue);
+  const currentLabel = currentOption?.label || placeholder;
+  const triggerContent = renderCurrent ? (
+    renderCurrent(currentOption, currentLabel)
+  ) : (
+    <>
+      {icon}
+      <span className="max-w-20 truncate">{currentLabel}</span>
+    </>
+  );
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -1038,10 +1083,14 @@ function CompactSelector<T extends { label: string; value: string }>({
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={isOpen}
-        className="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700"
+        title={buttonTitle ?? currentLabel}
+        aria-label={buttonTitle ?? currentLabel}
+        className={[
+          'inline-flex items-center gap-1 rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700',
+          buttonClassName,
+        ].filter(Boolean).join(' ')}
       >
-        {icon}
-        <span className="max-w-20 truncate">{currentLabel}</span>
+        {triggerContent}
         <ChevronDown size={10} className={`transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </button>
 
@@ -1052,25 +1101,33 @@ function CompactSelector<T extends { label: string; value: string }>({
               暂无可用选项
             </div>
           ) : (
-            options.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  onSelect(option.value);
-                  setIsOpen(false);
-                }}
-                className="flex w-full items-center justify-between px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
-              >
-                <span className="truncate text-xs text-gray-800 dark:text-white">
-                  {option.label}
-                </span>
-                {option.value === currentValue && (
-                  <Check size={12} className="flex-shrink-0 text-blue-500" />
-                )}
-              </button>
-            ))
+            options.map((option) => {
+              const isSelected = option.value === currentValue;
+
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onSelect(option.value);
+                    setIsOpen(false);
+                  }}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-700"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    {renderOption ? renderOption(option, isSelected) : (
+                      <span className="truncate text-xs text-gray-800 dark:text-white">
+                        {option.label}
+                      </span>
+                    )}
+                  </div>
+                  {isSelected && (
+                    <Check size={12} className="flex-shrink-0 text-blue-500" />
+                  )}
+                </button>
+              );
+            })
           )}
         </div>
       </FloatingMenuPortal>
@@ -1147,6 +1204,7 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   onSend,
   onAbort,
   onCloneConversation,
+  onClearConversation,
   disabled,
   isGenerating,
   queuedCount = 0,
@@ -3066,16 +3124,23 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
   const config = useConfigStore((state) => state.config);
   const keyboardShortcuts = config?.general?.keyboardShortcuts;
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
-  const cloneConversationShortcutLabel = useMemo(() => {
-    const def = SHORTCUT_ACTIONS.find((a) => a.id === 'session.clone');
+  const resolveShortcutLabel = useCallback((actionId: 'session.clone' | 'session.clear', fallback: string) => {
+    const def = SHORTCUT_ACTIONS.find((a) => a.id === actionId);
     const userRaw =
       shortcutPlatform === 'mac'
-        ? keyboardShortcuts?.mac?.['session.clone']
-        : keyboardShortcuts?.windows?.['session.clone'];
-    const fallback = shortcutPlatform === 'mac' ? 'Cmd+Shift+D' : 'Ctrl+Shift+D';
+        ? keyboardShortcuts?.mac?.[actionId]
+        : keyboardShortcuts?.windows?.[actionId];
     const raw = userRaw ?? (shortcutPlatform === 'mac' ? def?.defaultMac : def?.defaultWindows) ?? fallback;
     return normalizeKeybindingString(String(raw || ''), shortcutPlatform) ?? fallback;
   }, [keyboardShortcuts, shortcutPlatform]);
+  const cloneConversationShortcutLabel = useMemo(() => {
+    const fallback = shortcutPlatform === 'mac' ? 'Cmd+Shift+D' : 'Ctrl+Shift+D';
+    return resolveShortcutLabel('session.clone', fallback);
+  }, [resolveShortcutLabel, shortcutPlatform]);
+  const clearConversationShortcutLabel = useMemo(() => {
+    const fallback = shortcutPlatform === 'mac' ? 'Cmd+Shift+Backspace' : 'Ctrl+Shift+Backspace';
+    return resolveShortcutLabel('session.clear', fallback);
+  }, [resolveShortcutLabel, shortcutPlatform]);
 
   // Skills catalog for `$skill` autocomplete (metadata only)
   const [skillOutcomeForMentions, setSkillOutcomeForMentions] = useState<SkillLoadOutcome | null>(null);
@@ -3640,7 +3705,9 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
             />
             <ExtraActionsMenu
               onCloneConversation={onCloneConversation}
+              onClearConversation={onClearConversation}
               cloneConversationShortcutLabel={cloneConversationShortcutLabel}
+              clearConversationShortcutLabel={clearConversationShortcutLabel}
               disabled={disabled || isGenerating}
             />
           </div>
@@ -3652,11 +3719,37 @@ export const InputArea = React.forwardRef<InputAreaHandle, InputAreaProps>(({
                 {/* Run mode selector */}
                 {hasModeSelector && (
                   <CompactSelector
-                    icon={<span className="text-[10px] text-gray-500 dark:text-gray-400">模式</span>}
                     options={RUN_MODE_OPTIONS}
                     currentValue={runMode}
                     onSelect={(value) => onRunModeChange?.(value as RunMode)}
                     disabled={disabled}
+                    buttonClassName="max-w-32 px-1.5"
+                    buttonTitle={`Run mode: ${RUN_MODE_OPTIONS.find((option) => option.value === runMode)?.label ?? runMode}`}
+                    renderCurrent={(option, label) => {
+                      const Icon = option?.icon ?? Bot;
+                      const currentShortLabel = option?.shortLabel ?? label;
+
+                      return (
+                        <>
+                          <Icon size={12} />
+                          <span className="max-w-20 truncate text-xs text-gray-700 dark:text-gray-200">
+                            {currentShortLabel}
+                          </span>
+                        </>
+                      );
+                    }}
+                    renderOption={(option) => {
+                      const Icon = option.icon;
+
+                      return (
+                        <>
+                          <Icon size={12} className="shrink-0 text-gray-500 dark:text-gray-400" />
+                          <span className="truncate text-xs text-gray-800 dark:text-white">
+                            {option.label}
+                          </span>
+                        </>
+                      );
+                    }}
                     placeholder="模式"
                   />
                 )}

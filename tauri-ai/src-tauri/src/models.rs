@@ -3378,6 +3378,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - 该符号对应的代码片段（可能不完整）
 - 一些工程元信息（languageId、projectRoot）
 - 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+- read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。
 
 输出要求（必须）：
 - 使用 Markdown。
@@ -3415,6 +3416,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 - 一个文件夹路径（folderPath）
 - 一些工程元信息（projectRoot、workstudioMainFolder 等）
 - 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+- read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。
 
 输出要求（必须）：
 - 使用 Markdown。
@@ -3433,6 +3435,7 @@ fn ensure_system_workspace_defaults(cfg: &mut AppConfig) -> bool {
 工作方式：
 1) 先复述你理解到的子任务目标（1-2 句）。
 2) 必要时使用只读工具（read_file / rg / list_dir）补齐上下文，不要修改文件。
+   - read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。
 3) 输出结构化结果：
    - 结论摘要
    - 关键依据（尽量附文件引用）

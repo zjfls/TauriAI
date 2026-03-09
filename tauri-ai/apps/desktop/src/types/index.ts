@@ -1305,6 +1305,7 @@ export type KeyboardShortcutActionId =
   | 'app.openDevtools'
   | 'session.new'
   | 'session.clone'
+  | 'session.clear'
   | 'session.close'
   | 'session.next'
   | 'session.previous'

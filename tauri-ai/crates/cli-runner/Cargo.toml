@@ -1,0 +1,10 @@
+[package]
+name = "tauri-ai-cli"
+version = "0.1.0"
+description = "TauriAI command line interface"
+edition = "2021"
+publish = false
+
+[dependencies]
+tauri_ai_lib = { path = "../../src-tauri", package = "tauri-ai" }
+tokio = { version = "1", features = ["full"] }

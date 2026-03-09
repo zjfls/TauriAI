@@ -218,6 +218,69 @@ describe('InputArea Text File Integration', () => {
       expect(textFileOption).toBeDefined();
     });
 
+    it('shows clear current conversation in extra actions and triggers callback', async () => {
+      const mockOnClearConversation = vi.fn();
+
+      render(
+        <InputArea
+          onSend={mockOnSend}
+          onAbort={mockOnAbort}
+          onCloneConversation={() => {}}
+          onClearConversation={mockOnClearConversation}
+          disabled={false}
+          isGenerating={false}
+        />
+      );
+
+      fireEvent.click(screen.getByRole('button', { name: /鏇村|更多/ }));
+
+      const clearItem = screen.getByRole('menuitem', { name: /娓呯┖褰撳墠浼氳瘽|清空当前会话/ });
+      fireEvent.click(clearItem);
+
+      expect(mockOnClearConversation).toHaveBeenCalledTimes(1);
+
+      await waitFor(() => {
+        expect(screen.queryByRole('menuitem')).toBeNull();
+      });
+    });
+
+    it('waits for async extra actions to finish before closing the menu', async () => {
+      let resolveClearConversation: (() => void) | null = null;
+      const mockOnClearConversation = vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveClearConversation = resolve;
+          })
+      );
+
+      render(
+        <InputArea
+          onSend={mockOnSend}
+          onAbort={mockOnAbort}
+          onCloneConversation={() => {}}
+          onClearConversation={mockOnClearConversation}
+          disabled={false}
+          isGenerating={false}
+        />
+      );
+
+      const menuButtons = Array.from(document.querySelectorAll('button[aria-haspopup="menu"]'));
+      expect(menuButtons.length).toBeGreaterThan(1);
+      fireEvent.click(menuButtons[1] as HTMLButtonElement);
+
+      const clearItem = screen.getAllByRole('menuitem')[1];
+      fireEvent.click(clearItem);
+
+      expect(mockOnClearConversation).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByRole('menuitem')).toHaveLength(2);
+
+      resolveClearConversation?.();
+
+      await waitFor(() => {
+        expect(screen.queryByRole('menuitem')).toBeNull();
+      });
+    });
+
     it('renders attachment menu in a body portal so scroll containers do not clip it', async () => {
       render(
         <InputArea

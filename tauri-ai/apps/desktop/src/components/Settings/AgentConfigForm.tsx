@@ -119,7 +119,8 @@ const SYSTEM_WORKSPACE_AGENTS: Agent[] = [
 - 一个代码符号的元信息（symbolName、symbolKind、filePath、location 等）
 - 该符号对应的代码片段（可能不完整）
 - 一些工程元信息（languageId、projectRoot）
-- 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+  - 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+  - read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。
 
 输出要求（必须）：
 - 使用 Markdown。
@@ -180,7 +181,8 @@ flowchart TD
 你会收到：
 - 一个文件夹路径（folderPath）
 - 一些工程元信息（projectRoot、workstudioMainFolder 等）
-- 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+  - 你可以在需要时使用工具（read_file / rg / list_dir / web_search）来补齐上下文，但不要修改文件。
+  - read_file 单次最多读取 400 行；超过 400 会直接报错。大文件请先用 rg 定位，再按需分块读取。
 
 输出要求（必须）：
 - 使用 Markdown。
