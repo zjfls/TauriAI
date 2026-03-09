@@ -136,3 +136,4 @@ objc2-foundation = "0.3.2"
 # Used to write raw PNG bytes into the Windows clipboard (registered "PNG" format),
 # as a fallback when decoding PNG -> RGBA fails.
 clipboard-win = { version = "5.4.1", features = ["std"] }
+webview2-com = "0.38"

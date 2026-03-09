@@ -759,7 +759,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod walk_dir_tests {
     use super::should_skip_walk_dir_name;
 
     #[test]

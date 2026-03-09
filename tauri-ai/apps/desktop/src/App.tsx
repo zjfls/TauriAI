@@ -42,6 +42,7 @@ import {
 } from './utils/windowBranding';
 import { getCurrentWindowLabelSafe, removeWindowPresence, writeWindowPresence } from './utils/windowPresence';
 import { clearWindowInteraction, recordWindowInteraction } from './utils/windowInteractionRouting';
+import { clearCurrentWindowRouteContext, syncCurrentWindowRouteContext } from './utils/windowRoutingContext';
 import type { CodeSnippetContentPart, WorkspaceMentionChip, Workstudio } from './types';
 import {
   clampWindowBoundsToMonitors,
@@ -80,6 +81,7 @@ function App() {
   const isDragGhostWindow = viewOverride === 'drag-ghost' || isGhostLabel;
   const shouldInitChatRuntime = !isWorkstudioWindow && !isJsonAnalyzerWindow && !isDragGhostWindow;
   const shouldInitChatStreamListeners = !isJsonAnalyzerWindow && !isDragGhostWindow;
+  const logSystemShortcut = (_stage: string, _detail?: Record<string, unknown>) => {};
 
   // Standalone Workstudio window: ensure native window title contains "Workstudio".
   // This avoids macOS Window menu showing the default HTML <title> ("Tauri + React + Typescript")
@@ -294,6 +296,51 @@ function App() {
       void clearWindowInteraction(currentWindowLabel);
     };
   }, [currentWindowLabel, isDragGhostWindow, isJsonAnalyzerWindow]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    if (isDragGhostWindow) return;
+
+    let disposed = false;
+    const runtimeReady = shouldInitChatRuntime || isWorkstudioWindow || isJsonAnalyzerWindow;
+    const syncContext = (source: string) => {
+      if (disposed) return;
+      logSystemShortcut('sync_window_context:dispatch', {
+        source,
+        runtimeReady,
+      });
+      void syncCurrentWindowRouteContext({
+        label: currentWindowLabel,
+        activeView,
+        runtimeReady,
+      });
+    };
+
+    const onFocus = () => syncContext('window.focus');
+    const onBlur = () => syncContext('window.blur');
+    const onVisibilityChange = () => syncContext('document.visibilitychange');
+
+    syncContext('effect.mount');
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      logSystemShortcut('sync_window_context:cleanup');
+      disposed = true;
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      void clearCurrentWindowRouteContext(currentWindowLabel);
+    };
+  }, [
+    activeView,
+    currentWindowLabel,
+    isDragGhostWindow,
+    isJsonAnalyzerWindow,
+    isWorkstudioWindow,
+    shouldInitChatRuntime,
+  ]);
 
   // Track if session initialization has been done to prevent duplicate execution
   const sessionInitialized = useRef(false);
@@ -787,12 +834,26 @@ function App() {
     let unlistenSettings: null | (() => void) = null;
     const currentWindow = getCurrentWebviewWindow();
 
+    logSystemShortcut('register_system_menu_listeners', {
+      label: currentWindow.label,
+      events: ['menu:new_session_agent', 'menu:new_external_session_agent', 'menu:open_settings'],
+    });
+
     void currentWindow.listen<string>('menu:new_session_agent', (event) => {
       const agentName = typeof event.payload === 'string' ? event.payload : '';
+      logSystemShortcut('menu:new_session_agent:received', {
+        targetLabel: currentWindow.label,
+        payload: event.payload,
+      });
       if (!agentName) return;
       void useSessionStore
         .getState()
         .createSession(agentName)
+        .then(() => {
+          logSystemShortcut('menu:new_session_agent:handled', {
+            agentName,
+          });
+        })
         .catch((e) => console.error('menu:new_session_agent failed:', e));
       useUIStore.getState().setActiveView('chat');
     })
@@ -803,14 +864,28 @@ function App() {
         }
         unlistenNewAgent = fn;
       })
-      .catch(() => { });
+      .catch((error) => {
+        logSystemShortcut('menu:new_session_agent:listen_failed', {
+          error: error instanceof Error ? error.message : String(error),
+          targetLabel: currentWindow.label,
+        });
+      });
 
     void currentWindow.listen<string>('menu:new_external_session_agent', (event) => {
       const agentName = typeof event.payload === 'string' ? event.payload : '';
+      logSystemShortcut('menu:new_external_session_agent:received', {
+        targetLabel: currentWindow.label,
+        payload: event.payload,
+      });
       if (!agentName) return;
       void useSessionStore
         .getState()
         .createExternalSession(agentName)
+        .then(() => {
+          logSystemShortcut('menu:new_external_session_agent:handled', {
+            agentName,
+          });
+        })
         .catch((e) => console.error('menu:new_external_session_agent failed:', e));
       useUIStore.getState().setActiveView('chat');
     })
@@ -821,10 +896,17 @@ function App() {
         }
         unlistenNewExternalAgent = fn;
       })
-      .catch(() => { });
+      .catch((error) => {
+        logSystemShortcut('menu:new_external_session_agent:listen_failed', {
+          error: error instanceof Error ? error.message : String(error),
+          targetLabel: currentWindow.label,
+        });
+      });
 
     void currentWindow.listen('menu:open_settings', () => {
-      console.log('[Shortcut][menu] menu:open_settings received in App; switching to settings view');
+      logSystemShortcut('menu:open_settings:received', {
+        targetLabel: currentWindow.label,
+      });
       useUIStore.getState().setActiveView('settings');
     })
       .then((fn) => {
@@ -834,9 +916,17 @@ function App() {
         }
         unlistenSettings = fn;
       })
-      .catch(() => { });
+      .catch((error) => {
+        logSystemShortcut('menu:open_settings:listen_failed', {
+          error: error instanceof Error ? error.message : String(error),
+          targetLabel: currentWindow.label,
+        });
+      });
 
     return () => {
+      logSystemShortcut('unregister_system_menu_listeners', {
+        label: currentWindow.label,
+      });
       disposed = true;
       unlistenNewAgent?.();
       unlistenNewExternalAgent?.();
@@ -857,7 +947,15 @@ function App() {
     let unlistenPractice: null | (() => void) = null;
     const currentWindow = getCurrentWebviewWindow();
 
+    logSystemShortcut('register_view_menu_listeners', {
+      label: currentWindow.label,
+      events: ['menu:open_history', 'menu:open_practice'],
+    });
+
     void currentWindow.listen('menu:open_history', () => {
+      logSystemShortcut('menu:open_history:received', {
+        targetLabel: currentWindow.label,
+      });
       useUIStore.getState().setActiveView('history');
     })
       .then((fn) => {
@@ -867,9 +965,17 @@ function App() {
         }
         unlistenHistory = fn;
       })
-      .catch(() => { });
+      .catch((error) => {
+        logSystemShortcut('menu:open_history:listen_failed', {
+          error: error instanceof Error ? error.message : String(error),
+          targetLabel: currentWindow.label,
+        });
+      });
 
     void currentWindow.listen('menu:open_practice', () => {
+      logSystemShortcut('menu:open_practice:received', {
+        targetLabel: currentWindow.label,
+      });
       void openPracticeWindow();
     })
       .then((fn) => {
@@ -879,10 +985,18 @@ function App() {
         }
         unlistenPractice = fn;
       })
-      .catch(() => { });
+      .catch((error) => {
+        logSystemShortcut('menu:open_practice:listen_failed', {
+          error: error instanceof Error ? error.message : String(error),
+          targetLabel: currentWindow.label,
+        });
+      });
 
 
     return () => {
+      logSystemShortcut('unregister_view_menu_listeners', {
+        label: currentWindow.label,
+      });
       disposed = true;
       unlistenHistory?.();
       unlistenPractice?.();

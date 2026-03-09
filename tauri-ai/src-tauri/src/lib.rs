@@ -26,14 +26,27 @@ pub mod tray;
 pub mod workstudio_security;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 use tauri::Emitter;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::Manager;
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2AcceleratorKeyPressedEventArgs, ICoreWebView2Controller,
+    COREWEBVIEW2_KEY_EVENT_KIND, COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN,
+    COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN,
+};
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+use webview2_com::AcceleratorKeyPressedEventHandler;
 
 use config::ConfigManager;
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+unsafe extern "system" {
+    fn GetKeyState(nvirtkey: i32) -> i16;
+}
 
 #[cfg(all(debug_assertions, target_os = "macos"))]
 fn schedule_set_dev_dock_icon(app: &tauri::AppHandle) {
@@ -106,6 +119,204 @@ fn schedule_set_dev_window_icons(app: &tauri::AppHandle) {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn collect_enabled_internal_session_agents(
+    config: &crate::models::AppConfig,
+) -> Vec<&crate::models::Agent> {
+    config
+        .agents
+        .iter()
+        .filter(|agent| {
+            agent.enabled && !agent.is_practice() && agent.workstudio_enabled != Some(true)
+        })
+        .collect()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn collect_enabled_external_session_agents(
+    config: &crate::models::AppConfig,
+) -> Vec<&crate::models::ExternalAgentConfig> {
+    let mut agents: Vec<_> = config
+        .external_agents
+        .agents
+        .iter()
+        .filter(|agent| agent.enabled)
+        .collect();
+    agents.sort_by(|left, right| left.name.cmp(&right.name));
+    agents
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_default_internal_session_agent<'a>(
+    config: &'a crate::models::AppConfig,
+) -> Option<&'a crate::models::Agent> {
+    let enabled_agents = collect_enabled_internal_session_agents(config);
+    let configured_default = config.default_agent.trim();
+    if !configured_default.is_empty() {
+        if let Some(agent) = enabled_agents
+            .iter()
+            .copied()
+            .find(|agent| agent.name == configured_default)
+        {
+            return Some(agent);
+        }
+    }
+    enabled_agents.into_iter().next()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_default_external_session_agent<'a>(
+    config: &'a crate::models::AppConfig,
+) -> Option<&'a crate::models::ExternalAgentConfig> {
+    collect_enabled_external_session_agents(config)
+        .into_iter()
+        .next()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn should_bind_new_session_to_external(config: &crate::models::AppConfig) -> bool {
+    collect_enabled_internal_session_agents(config).is_empty()
+        && resolve_default_external_session_agent(config).is_some()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+enum DefaultSessionMenuTarget {
+    Internal(String),
+    External(String),
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+const DESKTOP_MENU_SHORTCUT_SPECS: [(&str, &str, &str); 4] = [
+    ("session.new", "Cmd+T", "Ctrl+T"),
+    ("app.openSettings", "Cmd+,", "Ctrl+,"),
+    ("app.openHistory", "Cmd+Y", "Ctrl+Shift+H"),
+    ("app.openDevtools", "Cmd+Option+I", "Ctrl+Shift+I"),
+];
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn desktop_menu_shortcuts_enabled(config: &crate::models::AppConfig) -> bool {
+    config.general.keyboard_shortcuts.enabled
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn desktop_menu_shortcut_override<'a>(
+    config: &'a crate::models::AppConfig,
+    action_id: &str,
+) -> Option<&'a str> {
+    let platform_map = if cfg!(target_os = "macos") {
+        &config.general.keyboard_shortcuts.mac
+    } else {
+        &config.general.keyboard_shortcuts.windows
+    };
+    platform_map.get(action_id).map(String::as_str)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_menu_accelerator(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut mods: Vec<&'static str> = Vec::new();
+    let mut key = String::new();
+    for part in trimmed.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "cmd" | "command" | "meta" | "super" => mods.push("Cmd"),
+            "ctrl" | "control" => mods.push("Ctrl"),
+            "cmdorctrl" | "cmdorcontrol" | "commandorcontrol" | "commandorctrl" => {
+                mods.push("CmdOrCtrl")
+            }
+            "alt" | "option" | "opt" => mods.push("Alt"),
+            "shift" => mods.push("Shift"),
+            "esc" | "escape" => key = "Escape".to_string(),
+            "return" | "enter" => key = "Enter".to_string(),
+            "space" | "spacebar" => key = "Space".to_string(),
+            "backspace" => key = "Backspace".to_string(),
+            "delete" | "del" => key = "Delete".to_string(),
+            "left" => key = "Left".to_string(),
+            "right" => key = "Right".to_string(),
+            "up" => key = "Up".to_string(),
+            "down" => key = "Down".to_string(),
+            "comma" => key = ",".to_string(),
+            "period" => key = ".".to_string(),
+            "minus" | "_" => key = "-".to_string(),
+            "equal" => key = "=".to_string(),
+            _ => key = part.to_string().replace("Option", "Alt"),
+        }
+    }
+
+    if key.is_empty() {
+        return None;
+    }
+
+    let mut normalized_parts: Vec<String> = Vec::new();
+    let has_cmd_or_ctrl = mods.iter().any(|m| *m == "CmdOrCtrl");
+    let has_cmd = mods.iter().any(|m| *m == "Cmd");
+    let has_ctrl = mods.iter().any(|m| *m == "Ctrl");
+    if has_cmd_or_ctrl {
+        normalized_parts.push("CmdOrCtrl".to_string());
+    } else {
+        if has_cmd {
+            normalized_parts.push("Cmd".to_string());
+        }
+        if has_ctrl {
+            normalized_parts.push("Ctrl".to_string());
+        }
+    }
+    if mods.iter().any(|m| *m == "Alt") {
+        normalized_parts.push("Alt".to_string());
+    }
+    if mods.iter().any(|m| *m == "Shift") {
+        normalized_parts.push("Shift".to_string());
+    }
+    normalized_parts.push(key);
+
+    let candidate = normalized_parts.join("+");
+    if muda::accelerator::Accelerator::from_str(&candidate).is_ok() {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn configured_menu_shortcut(
+    config: &crate::models::AppConfig,
+    action_id: &str,
+    default_mac: &str,
+    default_windows: &str,
+) -> Option<String> {
+    if !desktop_menu_shortcuts_enabled(config) {
+        return None;
+    }
+
+    let raw = desktop_menu_shortcut_override(config, action_id)
+        .unwrap_or(if cfg!(target_os = "macos") {
+            default_mac
+        } else {
+            default_windows
+        })
+        .trim();
+
+    if raw.is_empty() {
+        return None;
+    }
+
+    normalize_menu_accelerator(raw)
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_default_session_menu_target(
+    config: &crate::models::AppConfig,
+) -> Option<DefaultSessionMenuTarget> {
+    if let Some(agent) = resolve_default_internal_session_agent(config) {
+        return Some(DefaultSessionMenuTarget::Internal(agent.name.clone()));
+    }
+    resolve_default_external_session_agent(config)
+        .map(|agent| DefaultSessionMenuTarget::External(agent.name.clone()))
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     config: &crate::models::AppConfig,
@@ -118,30 +329,10 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         default_mac: &'a str,
         default_windows: &'a str,
     ) -> Option<String> {
-        let platform_map = if cfg!(target_os = "macos") {
-            &config.general.keyboard_shortcuts.mac
-        } else {
-            &config.general.keyboard_shortcuts.windows
-        };
-        let raw = platform_map
-            .get(action_id)
-            .map(String::as_str)
-            .unwrap_or_else(|| {
-                if cfg!(target_os = "macos") {
-                    default_mac
-                } else {
-                    default_windows
-                }
-            })
-            .trim();
-
-        if raw.is_empty() {
-            return None;
-        }
-
-        normalize_menu_accelerator(raw)
+        configured_menu_shortcut(config, action_id, default_mac, default_windows)
     }
 
+    #[allow(dead_code)]
     fn normalize_menu_accelerator(raw: &str) -> Option<String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
@@ -216,46 +407,28 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
 
     // Prepare internal/external agent lists for "新建会话" 子菜单。
     // Exclude Workstudio/Workspace AI agents from the main window's internal session menu.
-    let mut enabled_agents: Vec<_> = config
-        .agents
-        .iter()
-        .filter(|a| a.enabled && !a.is_practice() && a.workstudio_enabled != Some(true))
-        .collect();
-    let mut enabled_external_agents: Vec<_> = config
-        .external_agents
-        .agents
-        .iter()
-        .filter(|a| a.enabled)
-        .collect();
-
-    // If configured default agent is missing/disabled, fall back to the first enabled agent.
-    // Otherwise Ctrl/Cmd+T may not be bound to any menu item, making it look "not working".
-    let configured_default = config.default_agent.trim();
-    let default_exists = !configured_default.is_empty()
-        && enabled_agents.iter().any(|a| a.name == configured_default);
-    let effective_default_agent = if default_exists {
+    let mut enabled_agents = collect_enabled_internal_session_agents(config);
+    let enabled_external_agents = collect_enabled_external_session_agents(config);
+    let default_internal_agent = resolve_default_internal_session_agent(config);
+    let default_external_agent = resolve_default_external_session_agent(config);
+    let effective_default_agent = default_internal_agent
+        .map(|agent| agent.name.as_str())
+        .unwrap_or_default();
+    if let Some(default_agent_name) = default_internal_agent.map(|agent| agent.name.as_str()) {
         if let Some(pos) = enabled_agents
             .iter()
-            .position(|a| a.name == configured_default)
+            .position(|agent| agent.name == default_agent_name)
         {
             let default_agent = enabled_agents.remove(pos);
             enabled_agents.insert(0, default_agent);
         }
-        configured_default
-    } else {
-        enabled_agents
-            .first()
-            .map(|a| a.name.as_str())
-            .unwrap_or_default()
-    };
-    enabled_external_agents.sort_by(|left, right| left.name.cmp(&right.name));
-    let effective_default_external_agent = enabled_external_agents
-        .first()
+    }
+    let effective_default_external_agent = default_external_agent
         .map(|agent| agent.name.as_str())
         .unwrap_or_default();
     let has_agents = !enabled_agents.is_empty();
     let has_external_agents = !enabled_external_agents.is_empty();
-    let bind_new_session_shortcut_to_external = !has_agents && has_external_agents;
+    let bind_new_session_shortcut_to_external = should_bind_new_session_to_external(config);
 
     let open_file = MenuItem::with_id(app, "open_file", "打开文件…", true, Some("CmdOrCtrl+O"))?;
 
@@ -284,6 +457,38 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
         configured_shortcut(config, "app.openHistory", "Cmd+Y", "Ctrl+Shift+H");
     let open_devtools_shortcut =
         configured_shortcut(config, "app.openDevtools", "Cmd+Option+I", "Ctrl+Shift+I");
+    let default_session_target = resolve_default_session_menu_target(config)
+        .map(|target| match target {
+            DefaultSessionMenuTarget::Internal(agent_name) => format!("internal:{agent_name}"),
+            DefaultSessionMenuTarget::External(agent_name) => format!("external:{agent_name}"),
+        })
+        .unwrap_or_else(|| "<none>".to_string());
+    log_shortcut_menu_backend(
+        "build_desktop_menu",
+        format!(
+            "shortcuts_enabled={} session.new={} app.openSettings={} app.openHistory={} app.openDevtools={} default_session_target={} has_internal_agents={} has_external_agents={} bind_new_session_to_external={}",
+            desktop_menu_shortcuts_enabled(config),
+            new_session_shortcut.as_deref().unwrap_or("<disabled>"),
+            open_settings_shortcut.as_deref().unwrap_or("<disabled>"),
+            open_history_shortcut.as_deref().unwrap_or("<disabled>"),
+            open_devtools_shortcut.as_deref().unwrap_or("<disabled>"),
+            default_session_target,
+            has_agents,
+            has_external_agents,
+            bind_new_session_shortcut_to_external
+        ),
+    );
+    let new_session_default = MenuItem::with_id(
+        app,
+        "new_session_default",
+        "新建会话",
+        has_agents || has_external_agents,
+        if has_agents || has_external_agents {
+            new_session_shortcut.as_deref()
+        } else {
+            None::<&str>
+        },
+    )?;
 
     let new_session_by_agent: Submenu<R> = if has_agents {
         let mut items: Vec<MenuItem<R>> = Vec::new();
@@ -295,12 +500,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             }
             let encoded = urlencoding::encode(&agent.name);
             let id = format!("new_session_agent:{encoded}");
-            let accelerator = if is_default {
-                new_session_shortcut.as_deref()
-            } else {
-                None::<&str>
-            };
-            items.push(MenuItem::with_id(app, id, label, true, accelerator)?);
+            items.push(MenuItem::with_id(app, id, label, true, None::<&str>)?);
         }
         let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
             items.iter().map(|i| i as _).collect();
@@ -327,12 +527,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             }
             let encoded = urlencoding::encode(&agent.name);
             let id = format!("new_external_session_agent:{encoded}");
-            let accelerator = if is_default {
-                new_session_shortcut.as_deref()
-            } else {
-                None::<&str>
-            };
-            items.push(MenuItem::with_id(app, id, label, true, accelerator)?);
+            items.push(MenuItem::with_id(app, id, label, true, None::<&str>)?);
         }
         let item_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
             items.iter().map(|i| i as _).collect();
@@ -527,6 +722,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
     if let Some(session) = session_submenu {
         session.insert_items(
             &[
+                &new_session_default,
                 &open_history,
                 &session_history_separator,
                 &new_session_by_agent,
@@ -540,6 +736,7 @@ pub(crate) fn build_desktop_menu<R: tauri::Runtime>(
             "会话",
             true,
             &[
+                &new_session_default,
                 &open_history,
                 &session_history_separator,
                 &new_session_by_agent,
@@ -617,6 +814,55 @@ pub(crate) struct WindowInteractionRouteState(
 );
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Debug, Default)]
+struct WindowContextEntry {
+    _label: String,
+    role: String,
+    host_window_label: Option<String>,
+    route_domain: String,
+    capabilities: HashSet<String>,
+    runtime_ready: bool,
+    visibility_state: String,
+    os_focused: bool,
+    last_interaction_at_ms: u128,
+    _active_view: Option<String>,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Default)]
+pub(crate) struct WindowContextRegistryState(
+    pub(crate) std::sync::Mutex<HashMap<String, WindowContextEntry>>,
+);
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub(crate) struct NativeSystemShortcutHookState(
+    pub(crate) Arc<std::sync::Mutex<HashSet<String>>>,
+);
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+impl Default for NativeSystemShortcutHookState {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(HashSet::new())))
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SystemShortcutRoutePolicy {
+    CurrentHostSurface,
+    CurrentSessionSurface,
+    FocusedWindow,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[derive(Clone, Copy, Debug)]
+struct SystemShortcutActionDefinition {
+    route_policy: SystemShortcutRoutePolicy,
+    target_capability: &'static str,
+    ensure_visible: bool,
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn window_interaction_now_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -634,6 +880,54 @@ fn normalize_window_interaction_value(value: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_window_context_role(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "main_host" => "main_host".to_string(),
+        "workspace_host" => "workspace_host".to_string(),
+        "chat_view" => "chat_view".to_string(),
+        "workstudio_view" => "workstudio_view".to_string(),
+        "json_analyzer" => "json_analyzer".to_string(),
+        "ghost" => "ghost".to_string(),
+        _ => "utility".to_string(),
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_window_context_domain(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "chat" => "chat".to_string(),
+        "workstudio" => "workstudio".to_string(),
+        _ => "utility".to_string(),
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_window_visibility_state(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "visible" => "visible".to_string(),
+        "hidden" => "hidden".to_string(),
+        "minimized" => "minimized".to_string(),
+        "destroyed" => "destroyed".to_string(),
+        _ => "hidden".to_string(),
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn normalize_window_capabilities(values: Vec<String>) -> HashSet<String> {
+    values
+        .into_iter()
+        .filter_map(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect()
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -659,73 +953,562 @@ fn is_workstudio_window_label(label: &str) -> bool {
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn is_chat_menu_target_label(label: &str) -> bool {
-    !is_ignored_window_label(label) && !label.starts_with("view-workstudio")
+fn is_window_host_role(role: &str) -> bool {
+    matches!(role, "main_host" | "workspace_host")
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn is_main_host_menu_action(action_id: &str) -> bool {
-    action_id.starts_with("new_session_agent:")
-        || action_id.starts_with("new_external_session_agent:")
-        || matches!(
-            action_id,
-            "open_settings" | "open_history" | "open_practice"
-        )
+fn window_context_can_handle(entry: &WindowContextEntry, capability: &str) -> bool {
+    entry.runtime_ready
+        && entry.visibility_state != "destroyed"
+        && entry.capabilities.contains(capability)
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn preferred_menu_target_label(
-    action_id: &str,
-    snapshot: &WindowInteractionRouteSnapshot,
+fn latest_context_label_matching<F>(
+    contexts: &HashMap<String, WindowContextEntry>,
+    mut predicate: F,
+) -> Option<String>
+where
+    F: FnMut(&str, &WindowContextEntry) -> bool,
+{
+    contexts
+        .iter()
+        .filter(|(label, entry)| predicate(label, entry))
+        .max_by_key(|(_, entry)| entry.last_interaction_at_ms)
+        .map(|(label, _)| label.clone())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_host_label_for_context(label: &str, entry: &WindowContextEntry) -> Option<String> {
+    if is_window_host_role(&entry.role) {
+        return Some(label.to_string());
+    }
+    normalize_window_interaction_value(entry.host_window_label.clone())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn system_shortcut_action_definition(action_id: &str) -> Option<SystemShortcutActionDefinition> {
+    if action_id.starts_with("new_session_agent:") {
+        return Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentSessionSurface,
+            target_capability: "session.create",
+            ensure_visible: true,
+        });
+    }
+    if action_id.starts_with("new_external_session_agent:") {
+        return Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentSessionSurface,
+            target_capability: "session.create_external",
+            ensure_visible: true,
+        });
+    }
+
+    match action_id {
+        "new_session_default" => Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentSessionSurface,
+            target_capability: "session.create",
+            ensure_visible: true,
+        }),
+        "open_settings" => Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentHostSurface,
+            target_capability: "surface.settings",
+            ensure_visible: true,
+        }),
+        "open_history" => Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentHostSurface,
+            target_capability: "surface.history",
+            ensure_visible: true,
+        }),
+        "open_practice" => Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::CurrentHostSurface,
+            target_capability: "surface.practice",
+            ensure_visible: true,
+        }),
+        "open_devtools" => Some(SystemShortcutActionDefinition {
+            route_policy: SystemShortcutRoutePolicy::FocusedWindow,
+            target_capability: "debug.devtools",
+            ensure_visible: false,
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn log_shortcut_menu_backend(_stage: &str, _detail: String) {}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn log_shortcut_native_backend(_stage: &str, _detail: String) {}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn log_shortcut_route_backend(_stage: &str, _detail: String) {}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn menu_action_id_from_shortcut_config_action(action_id: &str) -> Option<&'static str> {
+    match action_id {
+        "session.new" => Some("new_session_default"),
+        "app.openSettings" => Some("open_settings"),
+        "app.openHistory" => Some("open_history"),
+        "app.openDevtools" => Some("open_devtools"),
+        _ => None,
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn configured_system_shortcut_binding(
+    config: &crate::models::AppConfig,
+    config_action_id: &str,
 ) -> Option<String> {
-    if is_main_host_menu_action(action_id) {
-        snapshot
-            .last_main_host_window_label
-            .clone()
-            .or_else(|| snapshot.last_chat_window_label.clone())
-            .or_else(|| snapshot.last_window_label.clone())
-    } else {
-        snapshot.last_window_label.clone()
+    DESKTOP_MENU_SHORTCUT_SPECS
+        .iter()
+        .find(|(action_id, _, _)| *action_id == config_action_id)
+        .and_then(|(_, default_mac, default_windows)| {
+            configured_menu_shortcut(config, config_action_id, default_mac, default_windows)
+        })
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+#[derive(Clone, Copy, Debug, Default)]
+struct NativeShortcutModifiers {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeShortcutBindingPattern {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    meta: bool,
+    virtual_key: u32,
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+impl NativeShortcutBindingPattern {
+    fn matches(self, modifiers: NativeShortcutModifiers, virtual_key: u32) -> bool {
+        self.virtual_key == virtual_key
+            && self.ctrl == modifiers.ctrl
+            && self.alt == modifiers.alt
+            && self.shift == modifiers.shift
+            && self.meta == modifiers.meta
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn menu_target_allowed(action_id: &str, label: &str) -> bool {
-    if is_main_host_menu_action(action_id) {
-        return is_main_host_window_label(label);
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn native_shortcut_virtual_key_from_token(token: &str) -> Option<u32> {
+    let trimmed = token.trim();
+    if trimmed.is_empty() {
+        return None;
     }
-    if is_chat_menu_target_label(label) {
-        return true;
-    }
-    !is_ignored_window_label(label)
-}
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn pick_routed_menu_target<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    action_id: &str,
-) -> Option<tauri::WebviewWindow<R>> {
-    if let Some(state) = app.try_state::<WindowInteractionRouteState>() {
-        if let Ok(snapshot) = state.0.lock() {
-            if let Some(label) = preferred_menu_target_label(action_id, &snapshot) {
-                if menu_target_allowed(action_id, &label) {
-                    if let Some(window) = app.get_webview_window(&label) {
-                        return Some(window);
-                    }
+    if trimmed.len() == 1 {
+        return match trimmed.chars().next()?.to_ascii_uppercase() {
+            'A'..='Z' | '0'..='9' => Some(trimmed.chars().next()?.to_ascii_uppercase() as u32),
+            ',' => Some(0xBC),
+            '.' => Some(0xBE),
+            '-' => Some(0xBD),
+            '=' => Some(0xBB),
+            ';' => Some(0xBA),
+            '\'' => Some(0xDE),
+            '[' => Some(0xDB),
+            ']' => Some(0xDD),
+            '\\' => Some(0xDC),
+            '/' => Some(0xBF),
+            '`' => Some(0xC0),
+            _ => None,
+        };
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "space" | "spacebar" => Some(0x20),
+        "tab" => Some(0x09),
+        "enter" | "return" => Some(0x0D),
+        "escape" | "esc" => Some(0x1B),
+        "left" => Some(0x25),
+        "up" => Some(0x26),
+        "right" => Some(0x27),
+        "down" => Some(0x28),
+        "comma" => Some(0xBC),
+        "period" => Some(0xBE),
+        "minus" => Some(0xBD),
+        "equal" | "equals" => Some(0xBB),
+        "semicolon" => Some(0xBA),
+        "quote" | "apostrophe" => Some(0xDE),
+        "bracketleft" => Some(0xDB),
+        "bracketright" => Some(0xDD),
+        "backslash" => Some(0xDC),
+        "slash" => Some(0xBF),
+        "backquote" | "grave" => Some(0xC0),
+        _ => {
+            if let Some(index) = lower.strip_prefix('f') {
+                let number = index.parse::<u32>().ok()?;
+                if (1..=24).contains(&number) {
+                    return Some(0x70 + number - 1);
                 }
             }
+            None
+        }
+    }
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn parse_native_shortcut_binding(binding: &str) -> Option<NativeShortcutBindingPattern> {
+    let mut ctrl = false;
+    let mut alt = false;
+    let mut shift = false;
+    let mut meta = false;
+    let mut virtual_key = None;
+
+    for part in binding.split('+').map(str::trim).filter(|part| !part.is_empty()) {
+        match part.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => ctrl = true,
+            "alt" | "option" | "opt" => alt = true,
+            "shift" => shift = true,
+            "cmdorctrl" | "cmdorcontrol" | "commandorcontrol" | "commandorctrl" => ctrl = true,
+            "cmd" | "command" | "meta" | "super" => meta = true,
+            _ => virtual_key = native_shortcut_virtual_key_from_token(part),
         }
     }
 
-    if let Some(window) = app.webview_windows().into_values().find(|window| {
-        window.is_focused().unwrap_or(false) && menu_target_allowed(action_id, window.label())
-    }) {
+    Some(NativeShortcutBindingPattern {
+        ctrl,
+        alt,
+        shift,
+        meta,
+        virtual_key: virtual_key?,
+    })
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn get_key_state_pressed(virtual_key: i32) -> bool {
+    unsafe { (GetKeyState(virtual_key) as u16 & 0x8000) != 0 }
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn current_native_shortcut_modifiers() -> NativeShortcutModifiers {
+    NativeShortcutModifiers {
+        ctrl: get_key_state_pressed(0x11),
+        alt: get_key_state_pressed(0x12),
+        shift: get_key_state_pressed(0x10),
+        meta: get_key_state_pressed(0x5B) || get_key_state_pressed(0x5C),
+    }
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn is_modifier_virtual_key(virtual_key: u32) -> bool {
+    matches!(virtual_key, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C)
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn resolve_windows_native_system_shortcut_action(
+    config: &crate::models::AppConfig,
+    modifiers: NativeShortcutModifiers,
+    virtual_key: u32,
+) -> Option<(&'static str, String)> {
+    if !desktop_menu_shortcuts_enabled(config) || is_modifier_virtual_key(virtual_key) {
+        return None;
+    }
+
+    for (config_action_id, _, _) in DESKTOP_MENU_SHORTCUT_SPECS {
+        let Some(binding) = configured_system_shortcut_binding(config, config_action_id) else {
+            continue;
+        };
+        let Some(pattern) = parse_native_shortcut_binding(&binding) else {
+            continue;
+        };
+        if pattern.matches(modifiers, virtual_key) {
+            return menu_action_id_from_shortcut_config_action(config_action_id)
+                .map(|menu_action_id| (menu_action_id, binding));
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn format_window_context_entry(entry: &WindowContextEntry) -> String {
+    let mut capabilities: Vec<&str> = entry.capabilities.iter().map(String::as_str).collect();
+    capabilities.sort_unstable();
+
+    format!(
+        "role={},host={},domain={},caps=[{}],ready={},visibility={},focused={},last_ms={}",
+        entry.role,
+        entry.host_window_label.as_deref().unwrap_or("<none>"),
+        entry.route_domain,
+        capabilities.join(","),
+        entry.runtime_ready,
+        entry.visibility_state,
+        entry.os_focused,
+        entry.last_interaction_at_ms
+    )
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn format_window_context_registry(contexts: &HashMap<String, WindowContextEntry>) -> String {
+    let mut entries: Vec<String> = contexts
+        .iter()
+        .map(|(label, entry)| format!("{label}{{{}}}", format_window_context_entry(entry)))
+        .collect();
+    entries.sort_unstable();
+    entries.join("; ")
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn push_candidate_label(
+    out: &mut Vec<String>,
+    contexts: &HashMap<String, WindowContextEntry>,
+    label: Option<String>,
+    capability: &str,
+) {
+    let Some(candidate) = label else {
+        return;
+    };
+
+    let can_handle = contexts
+        .get(&candidate)
+        .map(|entry| window_context_can_handle(entry, capability))
+        .unwrap_or(candidate == "main");
+    if !can_handle {
+        return;
+    }
+    if !out.iter().any(|existing| existing == &candidate) {
+        out.push(candidate);
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn resolve_system_shortcut_target_label(
+    action_id: &str,
+    contexts: &HashMap<String, WindowContextEntry>,
+) -> Option<String> {
+    let definition = system_shortcut_action_definition(action_id)?;
+    let focused_label =
+        latest_context_label_matching(contexts, |_, entry| entry.os_focused && entry.visibility_state != "destroyed");
+    let latest_active_label =
+        latest_context_label_matching(contexts, |_, entry| entry.visibility_state != "destroyed");
+    let source_label = focused_label.as_ref().or(latest_active_label.as_ref());
+    let focused_label_text = focused_label.as_deref().unwrap_or("<none>").to_string();
+    let latest_active_label_text = latest_active_label.as_deref().unwrap_or("<none>").to_string();
+    let source_label_text = source_label
+        .map(|label| label.as_str())
+        .unwrap_or("<none>")
+        .to_string();
+
+    let mut candidates: Vec<String> = Vec::new();
+    match definition.route_policy {
+        SystemShortcutRoutePolicy::CurrentHostSurface
+        | SystemShortcutRoutePolicy::CurrentSessionSurface => {
+            if let Some(source_label) = source_label {
+                if let Some(source_entry) = contexts.get(source_label.as_str()) {
+                    push_candidate_label(
+                        &mut candidates,
+                        contexts,
+                        resolve_host_label_for_context(source_label, source_entry),
+                        definition.target_capability,
+                    );
+                    push_candidate_label(
+                        &mut candidates,
+                        contexts,
+                        latest_context_label_matching(contexts, |_, entry| {
+                            entry.route_domain == source_entry.route_domain
+                                && is_window_host_role(&entry.role)
+                                && window_context_can_handle(entry, definition.target_capability)
+                        }),
+                        definition.target_capability,
+                    );
+                }
+            }
+
+            push_candidate_label(
+                &mut candidates,
+                contexts,
+                latest_context_label_matching(contexts, |_, entry| {
+                    is_window_host_role(&entry.role)
+                        && window_context_can_handle(entry, definition.target_capability)
+                }),
+                definition.target_capability,
+            );
+            push_candidate_label(
+                &mut candidates,
+                contexts,
+                Some("main".to_string()),
+                definition.target_capability,
+            );
+        }
+        SystemShortcutRoutePolicy::FocusedWindow => {
+            push_candidate_label(
+                &mut candidates,
+                contexts,
+                focused_label,
+                definition.target_capability,
+            );
+            push_candidate_label(
+                &mut candidates,
+                contexts,
+                latest_context_label_matching(contexts, |_, entry| {
+                    window_context_can_handle(entry, definition.target_capability)
+                }),
+                definition.target_capability,
+            );
+            push_candidate_label(
+                &mut candidates,
+                contexts,
+                Some("main".to_string()),
+                definition.target_capability,
+            );
+        }
+    }
+
+    let chosen = candidates.first().cloned();
+    let candidate_chain = if candidates.is_empty() {
+        "<none>".to_string()
+    } else {
+        candidates.join(" -> ")
+    };
+    log_shortcut_route_backend(
+        "resolve_target",
+        format!(
+            "action_id={} policy={:?} capability={} focused_label={} latest_active_label={} source_label={} candidates=[{}] chosen={} contexts=[{}]",
+            action_id,
+            definition.route_policy,
+            definition.target_capability,
+            focused_label_text,
+            latest_active_label_text,
+            source_label_text,
+            candidate_chain,
+            chosen.as_deref().unwrap_or("<none>"),
+            format_window_context_registry(contexts)
+        ),
+    );
+
+    chosen
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn ensure_window_visible_and_focused<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn pick_system_shortcut_target<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    action_id: &str,
+) -> Option<tauri::WebviewWindow<R>> {
+    let definition = system_shortcut_action_definition(action_id)?;
+
+    if let Some(state) = app.try_state::<WindowContextRegistryState>() {
+        if let Ok(contexts) = state.0.lock() {
+            if let Some(label) = resolve_system_shortcut_target_label(action_id, &contexts) {
+                if let Some(window) = app.get_webview_window(&label) {
+                    log_shortcut_route_backend(
+                        "pick_target:registry_hit",
+                        format!(
+                            "action_id={} target_label={} policy={:?} capability={} ensure_visible={}",
+                            action_id,
+                            label,
+                            definition.route_policy,
+                            definition.target_capability,
+                            definition.ensure_visible
+                        ),
+                    );
+                    if definition.ensure_visible {
+                        ensure_window_visible_and_focused(&window);
+                    }
+                    return Some(window);
+                }
+
+                log_shortcut_route_backend(
+                    "pick_target:registry_window_missing",
+                    format!(
+                        "action_id={} resolved_label={} policy={:?} capability={} windows_present={}",
+                        action_id,
+                        label,
+                        definition.route_policy,
+                        definition.target_capability,
+                        app.webview_windows()
+                            .into_keys()
+                            .collect::<Vec<String>>()
+                            .join(",")
+                    ),
+                );
+            } else {
+                log_shortcut_route_backend(
+                    "pick_target:registry_miss",
+                    format!(
+                        "action_id={} policy={:?} capability={} contexts=[{}]",
+                        action_id,
+                        definition.route_policy,
+                        definition.target_capability,
+                        format_window_context_registry(&contexts)
+                    ),
+                );
+            }
+        } else {
+            log_shortcut_route_backend(
+                "pick_target:registry_lock_error",
+                format!(
+                    "action_id={} policy={:?} capability={}",
+                    action_id, definition.route_policy, definition.target_capability
+                ),
+            );
+        }
+    } else {
+        log_shortcut_route_backend(
+            "pick_target:registry_state_missing",
+            format!(
+                "action_id={} policy={:?} capability={}",
+                action_id, definition.route_policy, definition.target_capability
+            ),
+        );
+    }
+
+    let fallback = match definition.route_policy {
+        SystemShortcutRoutePolicy::FocusedWindow => app
+            .webview_windows()
+            .into_values()
+            .find(|window| window.is_focused().unwrap_or(false))
+            .or_else(|| app.get_webview_window("main")),
+        SystemShortcutRoutePolicy::CurrentHostSurface
+        | SystemShortcutRoutePolicy::CurrentSessionSurface => app.get_webview_window("main"),
+    };
+
+    if let Some(window) = fallback {
+        log_shortcut_route_backend(
+            "pick_target:fallback_hit",
+            format!(
+                "action_id={} target_label={} policy={:?} capability={} ensure_visible={}",
+                action_id,
+                window.label(),
+                definition.route_policy,
+                definition.target_capability,
+                definition.ensure_visible
+            ),
+        );
+        if definition.ensure_visible {
+            ensure_window_visible_and_focused(&window);
+        }
         return Some(window);
     }
 
-    if menu_target_allowed(action_id, "main") {
-        return app.get_webview_window("main");
-    }
+    log_shortcut_route_backend(
+        "pick_target:none",
+        format!(
+            "action_id={} policy={:?} capability={} windows_present={}",
+            action_id,
+            definition.route_policy,
+            definition.target_capability,
+            app.webview_windows()
+                .into_keys()
+                .collect::<Vec<String>>()
+                .join(",")
+        ),
+    );
 
     None
 }
@@ -746,13 +1529,438 @@ where
     R: tauri::Runtime,
     S: serde::Serialize + Clone,
 {
-    let _ = app.emit_to(tauri::EventTarget::webview_window(label), event, payload);
+    let payload_json = serde_json::to_string(&payload)
+        .unwrap_or_else(|error| format!("<serialize_error:{}>", error));
+    log_shortcut_route_backend(
+        "emit_window_event:dispatch",
+        format!("target_label={} event={} payload={}", label, event, payload_json),
+    );
+    if let Err(error) = app.emit_to(tauri::EventTarget::webview_window(label), event, payload) {
+        log_shortcut_route_backend(
+            "emit_window_event:error",
+            format!("target_label={} event={} error={}", label, event, error),
+        );
+    } else {
+        log_shortcut_route_backend(
+            "emit_window_event:ok",
+            format!("target_label={} event={}", label, event),
+        );
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn dispatch_system_shortcut_action<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    action_id: &str,
+    source: &str,
+) -> bool {
+    log_shortcut_route_backend(
+        "dispatch_system_action",
+        format!("source={} action_id={}", source, action_id),
+    );
+
+    match action_id {
+        "open_settings" => {
+            if let Some(window) = pick_system_shortcut_target(app, "open_settings") {
+                emit_webview_window_event(app, window.label(), "menu:open_settings", ());
+            } else {
+                log_shortcut_menu_backend(
+                    "dispatch_skipped",
+                    format!(
+                        "source={} action_id=open_settings reason=no_target_window",
+                        source
+                    ),
+                );
+            }
+            true
+        }
+        "open_practice" => {
+            if let Some(window) = pick_system_shortcut_target(app, "open_practice") {
+                emit_webview_window_event(app, window.label(), "menu:open_practice", ());
+            } else {
+                log_shortcut_menu_backend(
+                    "dispatch_skipped",
+                    format!(
+                        "source={} action_id=open_practice reason=no_target_window",
+                        source
+                    ),
+                );
+            }
+            true
+        }
+        "open_history" => {
+            if let Some(window) = pick_system_shortcut_target(app, "open_history") {
+                emit_webview_window_event(app, window.label(), "menu:open_history", ());
+            } else {
+                log_shortcut_menu_backend(
+                    "dispatch_skipped",
+                    format!(
+                        "source={} action_id=open_history reason=no_target_window",
+                        source
+                    ),
+                );
+            }
+            true
+        }
+        "new_session_default" => {
+            let config = app
+                .state::<Arc<ConfigManager>>()
+                .ensure_default()
+                .unwrap_or_default();
+            let target = resolve_default_session_menu_target(&config);
+            if let Some(window) = pick_system_shortcut_target(app, "new_session_default") {
+                match target {
+                    Some(DefaultSessionMenuTarget::Internal(agent_name)) => {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:new_session_agent",
+                            agent_name,
+                        );
+                    }
+                    Some(DefaultSessionMenuTarget::External(agent_name)) => {
+                        emit_webview_window_event(
+                            app,
+                            window.label(),
+                            "menu:new_external_session_agent",
+                            agent_name,
+                        );
+                    }
+                    None => {
+                        log_shortcut_menu_backend(
+                            "dispatch_skipped",
+                            format!(
+                                "source={} action_id=new_session_default reason=no_default_session_target",
+                                source
+                            ),
+                        );
+                    }
+                }
+            } else {
+                log_shortcut_menu_backend(
+                    "dispatch_skipped",
+                    format!(
+                        "source={} action_id=new_session_default reason=no_target_window",
+                        source
+                    ),
+                );
+            }
+            true
+        }
+        "open_devtools" => {
+            #[cfg(debug_assertions)]
+            {
+                if let Some(window) = pick_system_shortcut_target(app, "open_devtools") {
+                    window.open_devtools();
+                } else {
+                    log_shortcut_menu_backend(
+                        "dispatch_skipped",
+                        format!(
+                            "source={} action_id=open_devtools reason=no_target_window",
+                            source
+                        ),
+                    );
+                }
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                log_shortcut_menu_backend(
+                    "dispatch_skipped",
+                    format!(
+                        "source={} action_id=open_devtools reason=devtools_disabled",
+                        source
+                    ),
+                );
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(all(target_os = "windows", not(any(target_os = "android", target_os = "ios"))))]
+fn ensure_native_system_shortcut_source_installed<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &NativeSystemShortcutHookState,
+    label: &str,
+) {
+    let label = label.trim();
+    if label.is_empty() || is_ignored_window_label(label) {
+        return;
+    }
+
+    let state_arc = state.0.clone();
+    {
+        let mut guard = match state_arc.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log_shortcut_native_backend(
+                    "install_hook_error",
+                    format!("label={} reason=state_lock_failed", label),
+                );
+                return;
+            }
+        };
+        if !guard.insert(label.to_string()) {
+            return;
+        }
+    }
+
+    let Some(window) = app.get_webview_window(label) else {
+        if let Ok(mut guard) = state_arc.lock() {
+            guard.remove(label);
+        }
+        log_shortcut_native_backend(
+            "install_hook_skipped",
+            format!("label={} reason=webview_window_missing", label),
+        );
+        return;
+    };
+
+    let state_for_destroy = state_arc.clone();
+    let destroyed_label = label.to_string();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            if let Ok(mut guard) = state_for_destroy.lock() {
+                if guard.remove(&destroyed_label) {
+                    log_shortcut_native_backend(
+                        "remove_hook_state",
+                        format!("label={} reason=window_destroyed", destroyed_label),
+                    );
+                }
+            }
+        }
+    });
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let install_label = label.to_string();
+    let app_handle = app.clone();
+    let with_webview_result = window.with_webview(move |platform_webview: tauri::webview::PlatformWebview| {
+        let callback_app = app_handle.clone();
+        let callback_label = install_label.clone();
+        let install_result: Result<(), String> = (|| unsafe {
+            let controller = platform_webview.controller();
+            let handler = AcceleratorKeyPressedEventHandler::create(Box::new(
+                move |_: Option<ICoreWebView2Controller>,
+                      args: Option<ICoreWebView2AcceleratorKeyPressedEventArgs>| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+
+                    let mut key_event_kind = COREWEBVIEW2_KEY_EVENT_KIND(0);
+                    args.KeyEventKind(&mut key_event_kind)?;
+                    if key_event_kind != COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN
+                        && key_event_kind != COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN
+                    {
+                        return Ok(());
+                    }
+
+                    let mut virtual_key = 0u32;
+                    args.VirtualKey(&mut virtual_key)?;
+
+                    let modifiers = current_native_shortcut_modifiers();
+                    if modifiers.ctrl || modifiers.alt || modifiers.meta {
+                        log_shortcut_native_backend(
+                            "accelerator_key",
+                            format!(
+                                "label={} kind={} vk={} ctrl={} alt={} shift={} meta={}",
+                                callback_label,
+                                key_event_kind.0,
+                                virtual_key,
+                                modifiers.ctrl,
+                                modifiers.alt,
+                                modifiers.shift,
+                                modifiers.meta
+                            ),
+                        );
+                    }
+
+                    let config = callback_app
+                        .state::<Arc<ConfigManager>>()
+                        .ensure_default()
+                        .unwrap_or_default();
+                    if let Some((action_id, binding)) =
+                        resolve_windows_native_system_shortcut_action(
+                            &config,
+                            modifiers,
+                            virtual_key,
+                        )
+                    {
+                        log_shortcut_native_backend(
+                            "match_action",
+                            format!(
+                                "label={} action_id={} binding={} vk={}",
+                                callback_label, action_id, binding, virtual_key
+                            ),
+                        );
+                        let source = format!("windows.webview_accelerator:{}", callback_label);
+                        let _ = dispatch_system_shortcut_action(&callback_app, action_id, &source);
+                        args.SetHandled(true.into())?;
+                        log_shortcut_native_backend(
+                            "handled_action",
+                            format!(
+                                "label={} action_id={} handled=true",
+                                callback_label, action_id
+                            ),
+                        );
+                    }
+                    Ok(())
+                },
+            ));
+            let mut token = 0i64;
+            controller
+                .add_AcceleratorKeyPressed(&handler, &mut token)
+                .map_err(|error| error.to_string())?;
+            log_shortcut_native_backend(
+                "install_webview_hook",
+                format!("label={} token={}", install_label, token),
+            );
+            Ok(())
+        })();
+        let _ = tx.send(install_result);
+    });
+
+    if let Err(error) = with_webview_result {
+        if let Ok(mut guard) = state_arc.lock() {
+            guard.remove(label);
+        }
+        log_shortcut_native_backend(
+            "install_hook_error",
+            format!("label={} reason=with_webview_failed error={}", label, error),
+        );
+        return;
+    }
+
+    match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            if let Ok(mut guard) = state_arc.lock() {
+                guard.remove(label);
+            }
+            log_shortcut_native_backend(
+                "install_hook_error",
+                format!("label={} reason=controller_register_failed error={}", label, error),
+            );
+        }
+        Err(error) => {
+            if let Ok(mut guard) = state_arc.lock() {
+                guard.remove(label);
+            }
+            log_shortcut_native_backend(
+                "install_hook_error",
+                format!("label={} reason=controller_register_timeout error={}", label, error),
+            );
+        }
+    }
+}
+
+#[cfg(not(all(target_os = "windows", not(any(target_os = "android", target_os = "ios")))))]
+fn ensure_native_system_shortcut_source_installed<R: tauri::Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _state: &NativeSystemShortcutHookState,
+    _label: &str,
+) {
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn sync_window_context(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, WindowContextRegistryState>,
+    native_shortcut_state: tauri::State<'_, NativeSystemShortcutHookState>,
+    label: String,
+    role: String,
+    host_window_label: Option<String>,
+    route_domain: String,
+    capabilities: Vec<String>,
+    runtime_ready: bool,
+    visibility_state: String,
+    os_focused: bool,
+    active_view: Option<String>,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    if label.is_empty() || is_ignored_window_label(&label) {
+        return Ok(());
+    }
+
+    let now_ms = window_interaction_now_ms();
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "window context registry poisoned".to_string())?;
+
+    if os_focused {
+        for (other_label, other_entry) in guard.iter_mut() {
+            if other_label != &label {
+                other_entry.os_focused = false;
+            }
+        }
+    }
+
+    let next_entry = WindowContextEntry {
+        _label: label.clone(),
+        role: normalize_window_context_role(&role),
+        host_window_label: normalize_window_interaction_value(host_window_label),
+        route_domain: normalize_window_context_domain(&route_domain),
+        capabilities: normalize_window_capabilities(capabilities),
+        runtime_ready,
+        visibility_state: normalize_window_visibility_state(&visibility_state),
+        os_focused,
+        last_interaction_at_ms: now_ms,
+        _active_view: normalize_window_interaction_value(active_view),
+    };
+    let entry_snapshot = format_window_context_entry(&next_entry);
+    guard.insert(label.clone(), next_entry);
+    log_shortcut_route_backend(
+        "sync_window_context",
+        format!(
+            "label={} entry={} registry=[{}]",
+            label,
+            entry_snapshot,
+            format_window_context_registry(&guard)
+        ),
+    );
+    drop(guard);
+    ensure_native_system_shortcut_source_installed(&app, native_shortcut_state.inner(), &label);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[tauri::command]
+fn clear_window_context(
+    state: tauri::State<'_, WindowContextRegistryState>,
+    label: String,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    if label.is_empty() {
+        return Ok(());
+    }
+
+    let mut guard = state
+        .0
+        .lock()
+        .map_err(|_| "window context registry poisoned".to_string())?;
+    let removed_entry = guard.remove(&label);
+    log_shortcut_route_backend(
+        "clear_window_context",
+        format!(
+            "label={} removed={} registry=[{}]",
+            label,
+            removed_entry
+                .as_ref()
+                .map(format_window_context_entry)
+                .unwrap_or_else(|| "<none>".to_string()),
+            format_window_context_registry(&guard)
+        ),
+    );
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[tauri::command]
 fn record_window_interaction(
     state: tauri::State<'_, WindowInteractionRouteState>,
+    window_context_state: tauri::State<'_, WindowContextRegistryState>,
     label: String,
     kind: String,
     pane_id: Option<String>,
@@ -792,7 +2000,13 @@ fn record_window_interaction(
         guard.last_main_host_window_label = Some(label.clone());
     }
     if normalized_kind == "workstudio" {
-        guard.last_workstudio_window_label = Some(label);
+        guard.last_workstudio_window_label = Some(label.clone());
+    }
+
+    if let Ok(mut context_guard) = window_context_state.0.lock() {
+        if let Some(entry) = context_guard.get_mut(&label) {
+            entry.last_interaction_at_ms = window_interaction_now_ms();
+        }
     }
 
     Ok(())
@@ -816,6 +2030,312 @@ fn clear_window_interaction(
     guard.windows.remove(&label);
     guard.recompute();
     Ok(())
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod window_routing_tests {
+    use super::*;
+
+    fn make_context(
+        label: &str,
+        role: &str,
+        host_window_label: Option<&str>,
+        route_domain: &str,
+        capabilities: &[&str],
+        last_interaction_at_ms: u128,
+        os_focused: bool,
+    ) -> WindowContextEntry {
+        WindowContextEntry {
+            _label: label.to_string(),
+            role: role.to_string(),
+            host_window_label: host_window_label.map(str::to_string),
+            route_domain: route_domain.to_string(),
+            capabilities: capabilities.iter().map(|value| value.to_string()).collect(),
+            runtime_ready: true,
+            visibility_state: "visible".to_string(),
+            os_focused,
+            last_interaction_at_ms,
+            _active_view: Some("chat".to_string()),
+        }
+    }
+
+    #[test]
+    fn open_settings_routes_focused_chat_view_back_to_main_host() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "main".to_string(),
+            make_context(
+                "main",
+                "main_host",
+                Some("main"),
+                "chat",
+                &["surface.settings", "surface.history", "session.create"],
+                10,
+                false,
+            ),
+        );
+        contexts.insert(
+            "view-chat-conv-1".to_string(),
+            make_context(
+                "view-chat-conv-1",
+                "chat_view",
+                Some("main"),
+                "chat",
+                &["debug.devtools"],
+                20,
+                true,
+            ),
+        );
+
+        assert_eq!(
+            resolve_system_shortcut_target_label("open_settings", &contexts),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn open_history_prefers_workspace_host_for_focused_workspace_child() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "workspace-1".to_string(),
+            make_context(
+                "workspace-1",
+                "workspace_host",
+                Some("workspace-1"),
+                "chat",
+                &["surface.settings", "surface.history", "session.create"],
+                10,
+                false,
+            ),
+        );
+        contexts.insert(
+            "view-chat-conv-2".to_string(),
+            make_context(
+                "view-chat-conv-2",
+                "chat_view",
+                Some("workspace-1"),
+                "chat",
+                &["debug.devtools"],
+                20,
+                true,
+            ),
+        );
+
+        assert_eq!(
+            resolve_system_shortcut_target_label("open_history", &contexts),
+            Some("workspace-1".to_string())
+        );
+    }
+
+    #[test]
+    fn new_session_falls_back_to_main_when_host_context_is_missing() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "main".to_string(),
+            make_context(
+                "main",
+                "main_host",
+                Some("main"),
+                "chat",
+                &["surface.settings", "surface.history", "session.create"],
+                10,
+                false,
+            ),
+        );
+        contexts.insert(
+            "view-chat-conv-3".to_string(),
+            make_context(
+                "view-chat-conv-3",
+                "chat_view",
+                Some("workspace-missing"),
+                "chat",
+                &["debug.devtools"],
+                20,
+                true,
+            ),
+        );
+
+        assert_eq!(
+            resolve_system_shortcut_target_label("new_session_agent:test", &contexts),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn new_session_default_prefers_workspace_host_for_focused_workspace_child() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "workspace-1".to_string(),
+            make_context(
+                "workspace-1",
+                "workspace_host",
+                Some("workspace-1"),
+                "chat",
+                &["surface.settings", "surface.history", "session.create"],
+                10,
+                false,
+            ),
+        );
+        contexts.insert(
+            "view-chat-conv-5".to_string(),
+            make_context(
+                "view-chat-conv-5",
+                "chat_view",
+                Some("workspace-1"),
+                "chat",
+                &["debug.devtools"],
+                20,
+                true,
+            ),
+        );
+
+        assert_eq!(
+            resolve_system_shortcut_target_label("new_session_default", &contexts),
+            Some("workspace-1".to_string())
+        );
+    }
+
+    #[test]
+    fn open_devtools_targets_focused_window_directly() {
+        let mut contexts = HashMap::new();
+        contexts.insert(
+            "main".to_string(),
+            make_context(
+                "main",
+                "main_host",
+                Some("main"),
+                "chat",
+                &[
+                    "surface.settings",
+                    "surface.history",
+                    "session.create",
+                    "debug.devtools",
+                ],
+                10,
+                false,
+            ),
+        );
+        contexts.insert(
+            "view-chat-conv-4".to_string(),
+            make_context(
+                "view-chat-conv-4",
+                "chat_view",
+                Some("main"),
+                "chat",
+                &["debug.devtools"],
+                20,
+                true,
+            ),
+        );
+
+        assert_eq!(
+            resolve_system_shortcut_target_label("open_devtools", &contexts),
+            Some("view-chat-conv-4".to_string())
+        );
+    }
+}
+
+#[cfg(all(test, not(any(target_os = "android", target_os = "ios"))))]
+mod desktop_menu_tests {
+    use super::*;
+
+    #[test]
+    fn normalize_menu_accelerator_supports_period_and_comma_shortcuts() {
+        assert_eq!(normalize_menu_accelerator("Ctrl+."), Some("Ctrl+.".to_string()));
+        assert_eq!(
+            normalize_menu_accelerator("Ctrl+Period"),
+            Some("Ctrl+.".to_string())
+        );
+        assert_eq!(normalize_menu_accelerator("Ctrl+,"), Some("Ctrl+,".to_string()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_native_shortcut_matcher_tracks_current_binding() {
+        let mut config = crate::models::AppConfig::default();
+        config
+            .general
+            .keyboard_shortcuts
+            .windows
+            .insert("app.openSettings".to_string(), "Ctrl+.".to_string());
+
+        assert_eq!(
+            resolve_windows_native_system_shortcut_action(
+                &config,
+                NativeShortcutModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                0xBE,
+            ),
+            Some(("open_settings", "Ctrl+.".to_string()))
+        );
+        assert_eq!(
+            resolve_windows_native_system_shortcut_action(
+                &config,
+                NativeShortcutModifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                0xBC,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn configured_menu_shortcut_respects_global_enabled_switch() {
+        let mut config = crate::models::AppConfig::default();
+        config
+            .general
+            .keyboard_shortcuts
+            .mac
+            .insert("app.openSettings".to_string(), "Cmd+Shift+,".to_string());
+        config
+            .general
+            .keyboard_shortcuts
+            .windows
+            .insert("app.openSettings".to_string(), "Ctrl+.".to_string());
+
+        let expected_enabled = if cfg!(target_os = "macos") {
+            Some("Cmd+Shift+,".to_string())
+        } else {
+            Some("Ctrl+.".to_string())
+        };
+        assert_eq!(
+            configured_menu_shortcut(&config, "app.openSettings", "Cmd+,", "Ctrl+,"),
+            expected_enabled
+        );
+
+        config.general.keyboard_shortcuts.enabled = false;
+        assert_eq!(
+            configured_menu_shortcut(&config, "app.openSettings", "Cmd+,", "Ctrl+,"),
+            None
+        );
+    }
+
+    #[test]
+    fn desktop_menu_signature_tracks_effective_system_shortcut_state() {
+        let mut config = crate::models::AppConfig::default();
+        let initial_sig = desktop_menu_signature(&config);
+
+        config
+            .general
+            .keyboard_shortcuts
+            .mac
+            .insert("app.openSettings".to_string(), "Cmd+Shift+,".to_string());
+        config
+            .general
+            .keyboard_shortcuts
+            .windows
+            .insert("app.openSettings".to_string(), "Ctrl+.".to_string());
+        let rebound_sig = desktop_menu_signature(&config);
+        assert_ne!(initial_sig, rebound_sig);
+
+        config.general.keyboard_shortcuts.enabled = false;
+        let disabled_sig = desktop_menu_signature(&config);
+        assert_ne!(rebound_sig, disabled_sig);
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -866,13 +2386,7 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         .map(|a| a.name.as_str())
         .unwrap_or_default();
 
-    let shortcut_platform_map = if cfg!(target_os = "macos") {
-        &config.general.keyboard_shortcuts.mac
-    } else {
-        &config.general.keyboard_shortcuts.windows
-    };
-
-    let mut sig = String::from("v4|default=");
+    let mut sig = String::from("v5|default=");
     sig.push_str(effective_default_agent);
     sig.push('|');
     sig.push_str("externalDefault=");
@@ -887,16 +2401,20 @@ pub(crate) fn desktop_menu_signature(config: &crate::models::AppConfig) -> Strin
         },
     );
     sig.push('|');
-    for key in [
-        "session.new",
-        "app.openSettings",
-        "app.openHistory",
-        "app.openDevtools",
-    ] {
-        sig.push_str(key);
+    sig.push_str("shortcutsEnabled=");
+    sig.push_str(if desktop_menu_shortcuts_enabled(config) {
+        "1"
+    } else {
+        "0"
+    });
+    sig.push('|');
+    for (action_id, default_mac, default_windows) in DESKTOP_MENU_SHORTCUT_SPECS {
+        sig.push_str(action_id);
         sig.push('=');
-        if let Some(value) = shortcut_platform_map.get(key) {
-            sig.push_str(value);
+        if let Some(value) =
+            configured_menu_shortcut(config, action_id, default_mac, default_windows)
+        {
+            sig.push_str(&value);
         }
         sig.push(';');
     }
@@ -949,35 +2467,28 @@ fn run_desktop() {
     let config_manager_for_menu = config_manager.clone();
 
     tauri::Builder::default()
-	        .menu(move |app| {
+        .menu(move |app| {
 	            let config = config_manager_for_menu.ensure_default().unwrap_or_default();
 	            build_desktop_menu(app, &config)
 	        })
         .on_menu_event(|app, event| {
-            let pick_menu_target = |action_id: &str| pick_routed_menu_target(app, action_id);
+            let pick_system_menu_target =
+                |action_id: &str| pick_system_shortcut_target(app, action_id);
+            let event_id = event.id().as_ref();
 
-            match event.id().as_ref() {
+            if system_shortcut_action_definition(event_id).is_some() {
+                log_shortcut_menu_backend(
+                    "on_menu_event",
+                    format!("id={} system_action=true", event_id),
+                );
+            }
+
+            match event_id {
                 "open_settings" => {
-                    if let Some(window) = pick_menu_target("open_settings") {
-                        let label = window.label().to_string();
-                        println!(
-                            "[Shortcut][menu] open_settings triggered; target_window={}",
-                            label
-                        );
-                        emit_webview_window_event(app, &label, "menu:open_settings", ());
-                    } else {
-                        println!("[Shortcut][menu] open_settings triggered; target_window=<none>");
-                    }
+                    let _ = dispatch_system_shortcut_action(app, "open_settings", "menu");
                 }
                 "open_practice" => {
-                    if let Some(window) = pick_menu_target("open_practice") {
-                        emit_webview_window_event(
-                            app,
-                            window.label(),
-                            "menu:open_practice",
-                            (),
-                        );
-                    }
+                    let _ = dispatch_system_shortcut_action(app, "open_practice", "menu");
                 }
                 "reset_main_window" => {
                     if app.get_webview_window("main").is_some() {
@@ -987,24 +2498,35 @@ fn run_desktop() {
                             "app:reset_main_window",
                             (),
                         );
+                    } else {
+                        log_shortcut_menu_backend(
+                            "dispatch_skipped",
+                            "action_id=reset_main_window reason=main_window_missing".to_string(),
+                        );
                     }
                 }
                 "open_history" => {
-                    if let Some(window) = pick_menu_target("open_history") {
-                        emit_webview_window_event(app, window.label(), "menu:open_history", ());
-                    }
+                    let _ = dispatch_system_shortcut_action(app, "open_history", "menu");
+                }
+                "new_session_default" => {
+                    let _ = dispatch_system_shortcut_action(app, "new_session_default", "menu");
                 }
                 id if id.starts_with("new_session_agent:") => {
                     let raw = id.trim_start_matches("new_session_agent:");
                     let agent_name = urlencoding::decode(raw)
                         .map(|s| s.into_owned())
                         .unwrap_or_else(|_| raw.to_string());
-                    if let Some(window) = pick_menu_target(id) {
+                    if let Some(window) = pick_system_menu_target(id) {
                         emit_webview_window_event(
                             app,
                             window.label(),
                             "menu:new_session_agent",
                             agent_name,
+                        );
+                    } else {
+                        log_shortcut_menu_backend(
+                            "dispatch_skipped",
+                            format!("action_id={} reason=no_target_window", id),
                         );
                     }
                 }
@@ -1013,12 +2535,17 @@ fn run_desktop() {
                     let agent_name = urlencoding::decode(raw)
                         .map(|s| s.into_owned())
                         .unwrap_or_else(|_| raw.to_string());
-                    if let Some(window) = pick_menu_target(id) {
+                    if let Some(window) = pick_system_menu_target(id) {
                         emit_webview_window_event(
                             app,
                             window.label(),
                             "menu:new_external_session_agent",
                             agent_name,
+                        );
+                    } else {
+                        log_shortcut_menu_backend(
+                            "dispatch_skipped",
+                            format!("action_id={} reason=no_target_window", id),
                         );
                     }
                 }
@@ -1068,17 +2595,7 @@ fn run_desktop() {
                     }
                 }
                 "open_devtools" => {
-                    #[cfg(debug_assertions)]
-                    {
-                        let focused = app
-                            .webview_windows()
-                            .into_values()
-                            .find(|w| w.is_focused().unwrap_or(false));
-
-                        if let Some(window) = focused.or_else(|| app.get_webview_window("main")) {
-                            window.open_devtools();
-                        }
-                    }
+                    let _ = dispatch_system_shortcut_action(app, "open_devtools", "menu");
                 }
                 "test_window" => {
                     // Create a standalone window for testing multi-window behavior.
@@ -1140,6 +2657,8 @@ fn run_desktop() {
         .manage(run_state)
         .manage(DesktopMenuSyncState::default())
         .manage(WindowInteractionRouteState::default())
+        .manage(WindowContextRegistryState::default())
+        .manage(NativeSystemShortcutHookState::default())
         .invoke_handler(tauri::generate_handler![
             // Runtime commands
             run_task,
@@ -1270,6 +2789,8 @@ fn run_desktop() {
             get_window_layout_state,
             upsert_window_layout_record,
             remove_window_layout_record,
+            sync_window_context,
+            clear_window_context,
             record_window_interaction,
             clear_window_interaction,
             // MCP commands

@@ -351,7 +351,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
     async (actionId: string): Promise<boolean> => {
       switch (actionId) {
         case 'app.openSettings': {
-          console.log('[Shortcut][frontend] app.openSettings executing via keydown path');
           useUIStore.getState().setActiveView('settings');
           return true;
         }
@@ -603,9 +602,6 @@ export function useKeyboardShortcuts(options: KeyboardShortcutsOptions = {}) {
       || actionId === 'app.openHistory'
       || actionId === 'app.openDevtools'
     )) {
-      if (actionId === 'app.openSettings') {
-        console.log('[Shortcut][frontend] app.openSettings matched in keydown path, but skipped because Tauri menu is authoritative');
-      }
       return;
     }
 
