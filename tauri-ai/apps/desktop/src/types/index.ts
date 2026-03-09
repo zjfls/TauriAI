@@ -1178,6 +1178,28 @@ export interface WorkstudioChatWithFileSummary {
   updatedAt: string;
 }
 
+export interface WorkstudioRightConversationTargetUiState {
+  kind: 'chat' | 'chat_with';
+  conversationId: string;
+  title: string;
+  workstudioId: string;
+  threadId?: string;
+  filePath?: string;
+  languageId?: string;
+  range?: { startLine: number; startColumn: number; endLine: number; endColumn: number };
+  selectionTextSnapshot?: string;
+  agentName?: string;
+  modelRef?: string;
+  lastActiveAt: string;
+}
+
+export interface WorkstudioRightConversationUiState {
+  open?: boolean;
+  activeConversationId?: string;
+  showCodePanel?: boolean;
+  recentTargets?: WorkstudioRightConversationTargetUiState[];
+}
+
 /**
  * Workstudio-scoped code intelligence preferences (persisted in Workstudio UI state).
  * - 未设置时：默认使用全局配置（所有已配置语言都可用）
@@ -1233,6 +1255,7 @@ export interface WorkstudioUiState {
   codeIntelligence?: WorkstudioCodeIntelligenceUiState;
   /** Outline 展开/浏览状态（可选） */
   outline?: WorkstudioOutlineUiState;
+  rightConversation?: WorkstudioRightConversationUiState;
 }
 
 // ============================================================================

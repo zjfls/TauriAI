@@ -3,7 +3,7 @@ import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi';
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { cursorPosition } from '@tauri-apps/api/window';
 import { invoke, isTauri } from '@tauri-apps/api/core';
-import type { ActiveView, RunMode } from '../types';
+import type { ActiveView, RunMode, Workstudio } from '../types';
 import { getWindowRecord, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type WindowBounds, upsertWindowRecord } from './windowLayout';
 import { normalizeChatWindowTitle, normalizeWorkstudioWindowTitle } from './windowBranding';
 
@@ -60,6 +60,25 @@ export type WorkspaceDockRequestPayload = {
 };
 
 export type WorkspaceDockAckPayload = {
+  requestId: string;
+  ok: boolean;
+  error?: string | null;
+};
+
+export type WorkstudioRightConversationKind = 'chat' | 'chat_with' | 'auto';
+
+export type WorkstudioRightConversationMountRequestPayload = {
+  requestId: string;
+  fromWindowLabel: string;
+  workstudioId: string;
+  conversationId: string;
+  kind?: WorkstudioRightConversationKind;
+  title?: string | null;
+  agentName?: string | null;
+  modelRef?: string | null;
+};
+
+export type WorkstudioRightConversationMountAckPayload = {
   requestId: string;
   ok: boolean;
   error?: string | null;
@@ -969,6 +988,101 @@ export const emitToWindowLabel = async (label: string, eventName: string, payloa
   } catch {
     return false;
   }
+};
+
+export const mountConversationToWorkstudioRightPanel = async (opts: {
+  workstudioId: string;
+  conversationId: string;
+  kind?: WorkstudioRightConversationKind;
+  title?: string | null;
+  agentName?: string | null;
+  modelRef?: string | null;
+}): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error('当前环境不支持挂到 Workstudio 右栏');
+  }
+
+  const workstudioId = String(opts.workstudioId ?? '').trim();
+  const conversationId = String(opts.conversationId ?? '').trim();
+  if (!workstudioId) throw new Error('缺少 workstudioId');
+  if (!conversationId) throw new Error('缺少 conversationId');
+
+  const sourceLabel = getCurrentWebviewWindow().label;
+  let workstudio: Workstudio | null = null;
+  try {
+    workstudio = await invoke<Workstudio | null>('get_workstudio', { workstudioId });
+  } catch {
+    workstudio = null;
+  }
+
+  const win = await openOrFocusWorkstudioWindow(`Workstudio: ${workstudio?.mainFolder ?? workstudioId}`, {
+    workstudioId,
+    mainFolder: workstudio?.mainFolder ?? null,
+  });
+
+  const payload: WorkstudioRightConversationMountRequestPayload = {
+    requestId: makeRequestId(),
+    fromWindowLabel: sourceLabel,
+    workstudioId,
+    conversationId,
+    kind: opts.kind ?? 'auto',
+    title: opts.title ?? null,
+    agentName: opts.agentName ?? null,
+    modelRef: opts.modelRef ?? null,
+  };
+
+  await ensureWindowVisible(win);
+
+  await new Promise<void>((resolve, reject) => {
+    let done = false;
+    let attempts = 0;
+    let intervalId: number | null = null;
+    let timeoutId: number | null = null;
+    let unlistenAck: (() => void) | null = null;
+
+    const finish = (error?: Error | null) => {
+      if (done) return;
+      done = true;
+      if (intervalId !== null) window.clearInterval(intervalId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+      try {
+        unlistenAck?.();
+      } catch {
+        // ignore
+      }
+      if (error) reject(error);
+      else resolve();
+    };
+
+    const send = () => {
+      attempts += 1;
+      void emitToWindowLabel(win.label, 'workstudio:right_conversation_mount_request', payload);
+    };
+
+    listen<WorkstudioRightConversationMountAckPayload>('workstudio:right_conversation_mount_ack', (event) => {
+      const ack = event.payload;
+      if (!ack || ack.requestId !== payload.requestId) return;
+      if (ack.ok) {
+        finish(null);
+        return;
+      }
+      finish(new Error(String(ack.error ?? '挂到 Workstudio 右栏失败')));
+    })
+      .then((fn) => {
+        unlistenAck = fn;
+        send();
+        intervalId = window.setInterval(() => {
+          if (attempts >= 8) return;
+          send();
+        }, 250);
+        timeoutId = window.setTimeout(() => {
+          finish(new Error('Workstudio 右栏未响应，请稍后重试'));
+        }, 3000);
+      })
+      .catch((error) => {
+        finish(error instanceof Error ? error : new Error(String(error)));
+      });
+  });
 };
 
 export const dockConversationToWindow = async (

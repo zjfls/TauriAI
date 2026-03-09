@@ -610,6 +610,45 @@ pub struct WorkstudioUiState {
     /// Outline 折叠/浏览状态（可选）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub outline: Option<WorkstudioOutlineState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub right_conversation: Option<WorkstudioRightConversationState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioRightConversationState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_code_panel: Option<bool>,
+    #[serde(default)]
+    pub recent_targets: Vec<WorkstudioRightConversationTargetState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkstudioRightConversationTargetState {
+    pub kind: String,
+    pub conversation_id: String,
+    pub title: String,
+    pub workstudio_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range: Option<CodeSnippetRange>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_text_snapshot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    pub last_active_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
