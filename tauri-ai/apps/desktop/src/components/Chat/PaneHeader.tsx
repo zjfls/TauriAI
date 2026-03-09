@@ -1,13 +1,20 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, Dock, ExternalLink, Loader2, X } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
+import { Bot, Dock, ExternalLink, Loader2, MessageSquare, X } from 'lucide-react';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, useSortable, horizontalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import type { AgentSession } from '../../types';
+import type { AgentSession, Workstudio } from '../../types';
 import { useConversationStore } from '../../stores/conversationStore';
 import { useSessionStore } from '../../stores/sessionStore';
-import { listChatWindows, openOrFocusConversationChatWindow, type ChatDockPlacement, type ChatWindowInfo } from '../../utils/viewWindow';
+import {
+  listChatWindows,
+  mountConversationToWorkstudioRightPanel,
+  openOrFocusConversationChatWindow,
+  type ChatDockPlacement,
+  type ChatWindowInfo,
+} from '../../utils/viewWindow';
 
 interface PaneHeaderProps {
   paneId: string;
@@ -27,7 +34,8 @@ const SortableTab: React.FC<{
   onSelect: () => void;
   onClose: () => void;
   onOpenDockMenu: (session: AgentSession, anchorEl: HTMLElement) => void;
-}> = ({ session, isActive, onSelect, onClose, onOpenDockMenu }) => {
+  onMountToWorkstudio: (session: AgentSession) => void;
+}> = ({ session, isActive, onSelect, onClose, onOpenDockMenu, onMountToWorkstudio }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: session.id,
   });
@@ -105,6 +113,30 @@ const SortableTab: React.FC<{
           title="停靠到其他窗口"
         >
           <Dock size={14} />
+        </button>
+        <button
+          type="button"
+          className={[
+            'rounded p-0.5 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800',
+            'disabled:cursor-not-allowed disabled:text-gray-300 dark:disabled:text-gray-600 disabled:hover:bg-transparent',
+          ].join(' ')}
+          disabled={session.isGenerating || !session.conversationId}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (session.isGenerating) {
+              alert('流式生成中，暂不支持挂到 Workstudio 右栏');
+              return;
+            }
+            if (!session.conversationId) {
+              alert('对话尚未初始化，无法挂到 Workstudio 右栏');
+              return;
+            }
+            onMountToWorkstudio(session);
+          }}
+          title="挂到 Workstudio 右栏"
+        >
+          <MessageSquare size={14} />
         </button>
         <button
           type="button"
@@ -265,6 +297,34 @@ export const PaneHeader: React.FC<PaneHeaderProps> = ({
     }
   }, [dockMenu?.sessionId]);
 
+  const handleMountToWorkstudio = useCallback(async (session: AgentSession) => {
+    try {
+      const conversationId = String(session.conversationId ?? '').trim();
+      if (!conversationId) throw new Error('缺少 conversationId');
+
+      let resolvedWorkstudioId = String(session.workstudioId ?? '').trim();
+      if (!resolvedWorkstudioId) {
+        const ws = await invoke<Workstudio>('ensure_workstudio_for_conversation', { conversationId });
+        resolvedWorkstudioId = String(ws?.id ?? '').trim();
+      }
+      if (!resolvedWorkstudioId) {
+        throw new Error('未能解析目标 Workstudio');
+      }
+
+      await mountConversationToWorkstudioRightPanel({
+        workstudioId: resolvedWorkstudioId,
+        conversationId,
+        kind: 'auto',
+        title: session.title,
+        agentName: session.agentName,
+        modelRef: session.modelRef ?? null,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      alert(`挂到 Workstudio 右栏失败：${message}`);
+    }
+  }, []);
+
   const { setNodeRef: setTabListRef } = useDroppable({
     id: `pane:${paneId}`,
   });
@@ -290,6 +350,7 @@ export const PaneHeader: React.FC<PaneHeaderProps> = ({
               onSelect={() => onSelectSession(s.id)}
               onClose={() => onCloseSession(s.id)}
               onOpenDockMenu={openDockMenu}
+              onMountToWorkstudio={handleMountToWorkstudio}
             />
           ))}
         </SortableContext>
