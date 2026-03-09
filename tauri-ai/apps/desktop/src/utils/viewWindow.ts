@@ -6,6 +6,7 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { ActiveView, RunMode } from '../types';
 import { getWindowRecord, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, type WindowBounds, upsertWindowRecord } from './windowLayout';
 import { normalizeChatWindowTitle, normalizeWorkstudioWindowTitle } from './windowBranding';
+import { getCurrentWindowLabelSafe } from './windowPresence';
 
 type WorkstudioOpenPayload = {
   requestId?: string | null;
@@ -321,6 +322,7 @@ export const workstudioWindowLabelByMainFolder = (mainFolder: string) => {
 export interface ViewWindowParams {
   view?: ActiveView | null;
   standalone: boolean;
+  hostWindowLabel?: string | null;
   /** Standalone chat window: do not auto-create a default session when empty. */
   noDefaultSession?: boolean;
   conversationId?: string | null;
@@ -343,6 +345,7 @@ const coerceViewWindowParams = (p: Partial<ViewWindowParams>): ViewWindowParams 
   return {
     view: (p.view ?? null) as ActiveView | null,
     standalone: Boolean(p.standalone),
+    hostWindowLabel: typeof p.hostWindowLabel === 'string' && p.hostWindowLabel.trim() ? p.hostWindowLabel.trim() : null,
     noDefaultSession: Boolean(p.noDefaultSession),
     conversationId: p.conversationId ?? null,
     runMode: p.runMode ?? null,
@@ -398,11 +401,34 @@ const consumeStagedViewParamsForCurrentWindow = (): ViewWindowParams | null => {
 
 let cachedViewWindowParams: ViewWindowParams | undefined;
 
+const normalizeHostWindowLabel = (value?: string | null): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+
+export const resolveCurrentHostWindowLabel = (): string | null => {
+  const currentLabel = getCurrentWindowLabelSafe().trim();
+  if (!currentLabel) return null;
+
+  const currentParams = getViewWindowParams();
+  const explicitHost = normalizeHostWindowLabel(currentParams.hostWindowLabel);
+  if (currentLabel === 'main' || currentLabel.startsWith('workspace-')) {
+    return currentLabel;
+  }
+  return explicitHost ?? currentLabel;
+};
+
+const resolveHostWindowLabelForNewWindow = (value?: string | null): string | null => {
+  return normalizeHostWindowLabel(value) ?? resolveCurrentHostWindowLabel();
+};
+
 export const getViewWindowParams = (): ViewWindowParams => {
   if (typeof window === 'undefined') {
     return {
       view: null,
       standalone: false,
+      hostWindowLabel: null,
       noDefaultSession: false,
       conversationId: null,
       runMode: null,
@@ -452,6 +478,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const view = get('view') as ActiveView | null;
   const standalone = get('standalone') === '1';
   const noDefaultSession = get('noDefaultSession') === '1';
+  const hostWindowLabel = get('hostWindowLabel');
   const conversationId = get('conversationId');
   const runMode = parseRunMode(get('runMode'));
   const agentName = get('agentName');
@@ -473,6 +500,7 @@ export const getViewWindowParams = (): ViewWindowParams => {
   const out: ViewWindowParams = {
     view,
     standalone,
+    hostWindowLabel,
     noDefaultSession,
     conversationId,
     runMode,
@@ -501,6 +529,7 @@ export const openViewWindow = (
     runMode?: RunMode;
     agentName?: string;
     noDefaultSession?: boolean;
+    hostWindowLabel?: string;
     documentPath?: string;
     workstudioId?: string;
     webUrl?: string;
@@ -525,6 +554,7 @@ export const openViewWindow = (
   const viewParams: ViewWindowParams = {
     view,
     standalone: true,
+    hostWindowLabel: resolveHostWindowLabelForNewWindow(opts?.hostWindowLabel),
     noDefaultSession: Boolean(opts?.noDefaultSession),
     conversationId: opts?.conversationId ?? null,
     runMode: opts?.runMode ?? null,
@@ -585,6 +615,7 @@ export const openOrFocusViewWindow = async (
     runMode?: RunMode;
     agentName?: string;
     noDefaultSession?: boolean;
+    hostWindowLabel?: string;
     documentPath?: string;
     workstudioId?: string;
     webUrl?: string;
@@ -633,6 +664,7 @@ export const openOrFocusViewWindow = async (
   const viewParams: ViewWindowParams = {
     view,
     standalone: true,
+    hostWindowLabel: resolveHostWindowLabelForNewWindow(opts?.hostWindowLabel),
     noDefaultSession: Boolean(opts?.noDefaultSession),
     conversationId: opts?.conversationId ?? null,
     runMode: opts?.runMode ?? null,
@@ -801,6 +833,7 @@ export const openOrFocusWorkstudioWindow = async (
         params: {
           view: 'workstudio',
           standalone: true,
+          hostWindowLabel: resolveCurrentHostWindowLabel(),
           noDefaultSession: true,
           conversationId: null,
           runMode: null,

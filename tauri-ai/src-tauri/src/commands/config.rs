@@ -33,8 +33,9 @@ pub async fn save_app_config(
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         // On Windows, repeatedly calling `set_menu` can cause the native menu bar to "blink".
-        // Since the menu only depends on enabled agents + default agent, we only rebuild/apply
-        // when those fields actually change.
+        // Only rebuild when menu-relevant state changes:
+        // - enabled/default agents
+        // - system shortcut bindings and their enabled switch
         let new_sig = crate::desktop_menu_signature(&config);
         let mut needs_update = true;
         if let Some(state) = app.try_state::<crate::DesktopMenuSyncState>() {
